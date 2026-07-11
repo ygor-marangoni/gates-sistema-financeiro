@@ -1,8 +1,15 @@
 "use strict";
 
 const DATA_URL = "data/financeiro.json";
+const DATA_API_URL = "/api/data";
 const STORAGE_KEY = "gates_financeiro_state_v1";
 const DATA_SNAPSHOT_KEY = "gates_financeiro_data_snapshot_v1";
+const PDFJS_VERSION = "3.11.174";
+const PDF_MAX_FILE_SIZE = 20 * 1024 * 1024;
+const PDF_WORKER_URL = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.js`;
+
+let remoteSaveChain = Promise.resolve();
+let remoteSyncWarned = false;
 
 const DEFAULT_CATEGORIES = { income: [], expense: [] };
 
@@ -164,6 +171,8 @@ const app = {
   editingGoalId: null,
   editingCategoryId: null,
   pendingImport: null,
+  pdfImportInProgress: false,
+  importConfirming: false,
   pendingConfirmAction: null,
   charts: {
     cashflow: null,
@@ -475,6 +484,19 @@ async function loadData() {
   const persisted = loadPersistedState();
 
   try {
+    const response = await fetch(DATA_API_URL, { cache: "no-store" });
+    if (response.ok) {
+      const payload = await response.json();
+      app.state = normalizeState(payload);
+      saveState({ sync: false });
+      saveDataSnapshot(dataSnapshot(payload));
+      return;
+    }
+  } catch {
+    // The API is optional during static development; continue with local data.
+  }
+
+  try {
     const response = await fetch(DATA_URL, { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
@@ -484,7 +506,7 @@ async function loadData() {
     if (!persisted || snapshot !== previousSnapshot) {
       app.state = normalizeState(payload);
       saveDataSnapshot(snapshot);
-      saveState();
+      saveState({ sync: false });
       return;
     }
   } catch {
@@ -492,7 +514,7 @@ async function loadData() {
   }
 
   app.state = persisted || seedState();
-  if (!persisted) saveState();
+  if (!persisted) saveState({ sync: false });
 }
 
 function dataSnapshot(payload) {
@@ -531,12 +553,34 @@ function loadPersistedState() {
   }
 }
 
-function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({
+function saveState({ sync = true } = {}) {
+  const payload = {
     version: 1,
     updatedAt: new Date().toISOString(),
     ...app.state
-  }));
+  };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  if (sync) queueRemoteSave(payload);
+}
+
+function queueRemoteSave(payload) {
+  remoteSaveChain = remoteSaveChain
+    .catch(() => undefined)
+    .then(async () => {
+      const response = await fetch(DATA_API_URL, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    })
+    .catch(() => {
+      if (!remoteSyncWarned && window.location.protocol !== "file:") {
+        remoteSyncWarned = true;
+        showToast("Alteração salva neste dispositivo; API de dados indisponível.");
+      }
+    });
+  return remoteSaveChain;
 }
 
 function exportPayload() {
@@ -2846,92 +2890,98 @@ async function prepareJsonImport(file) {
   els.importActions.classList.remove("hidden");
 }
 
-function groupPdfTextItems(items) {
-  const rows = [];
-  items
-    .filter((item) => String(item.str || "").trim())
-    .map((item) => ({ text: String(item.str).trim(), x: item.transform[4], y: item.transform[5] }))
-    .sort((a, b) => Math.abs(b.y - a.y) > 2 ? b.y - a.y : a.x - b.x)
-    .forEach((item) => {
-      const row = rows.find((entry) => Math.abs(entry.y - item.y) <= 2);
-      if (row) row.items.push(item);
-      else rows.push({ y: item.y, items: [item] });
-    });
-  return rows.map((row) => row.items.sort((a, b) => a.x - b.x).map((item) => item.text).join(" "));
+function groupPdfTextItems(items, pageNumber = 1) {
+  return window.GatesPdfParser.groupPdfTextItems(items, pageNumber);
 }
 
-function parseStatementDate(match) {
-  const day = Number(match[1]);
-  const month = Number(match[2]);
-  let year = match[3] ? Number(match[3]) : selectedDate().getFullYear();
-  if (year < 100) year += 2000;
-  const date = new Date(year, month - 1, day);
-  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return "";
-  return toISO(date);
+function parseStatementDate(value, context = {}) {
+  return window.GatesPdfParser.parseStatementDate(value, context);
 }
 
-function parseStatementLine(line, fileName) {
-  const dateMatch = line.match(/\b(\d{2})[\/.\-](\d{2})(?:[\/.\-](\d{2,4}))?\b/);
-  const amountMatch = line.match(/(-?\s*(?:R\$\s*)?\d[\d.]*,\d{2})\s*([DC])?\s*$/i);
-  if (!dateMatch || !amountMatch) return null;
-  const date = parseStatementDate(dateMatch);
-  if (!date) return null;
-  const amountText = amountMatch[1].replace(/R\$/gi, "").replace(/\s/g, "");
-  const amount = Math.abs(Number(amountText.replace(/\./g, "").replace(",", ".")));
-  if (!Number.isFinite(amount) || amount <= 0) return null;
-  const description = line
-    .slice(dateMatch.index + dateMatch[0].length, amountMatch.index)
-    .replace(/\s{2,}/g, " ")
-    .replace(/^[\s|\-:]+|[\s|\-:]+$/g, "") || "Movimentação importada";
-  const creditPattern = /recebid|cr[eé]dito|sal[aá]rio|rendimento|dep[oó]sito|estorno/i;
-  const indicator = String(amountMatch[2] || "").toUpperCase();
-  const type = indicator === "C" || (!indicator && !amountText.startsWith("-") && creditPattern.test(description))
-    ? "income"
-    : "expense";
-  return {
-    id: uid("transaction"),
-    type,
-    description,
-    amount,
-    date,
-    category: categoriesForType(type)[0]?.id || "",
-    account: "Extrato importado",
-    recurring: false,
-    notes: `Importado de ${fileName}`
-  };
+function parseStatementLine(line, fileName, context = {}) {
+  return window.GatesPdfParser.parseStatementLine(line, fileName, context);
 }
 
 function transactionFingerprint(item) {
-  return `${item.date}|${Number(item.amount).toFixed(2)}|${slugify(item.description)}`;
+  return window.GatesPdfParser.transactionFingerprint(item);
 }
 
 async function extractPdfTransactions(file) {
+  if (!window.GatesPdfParser) throw new Error("PDF_PROCESSING_FAILED");
   if (!window.pdfjsLib?.getDocument) throw new Error("PDF_LIBRARY_UNAVAILABLE");
-  window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
-  const loadingTask = window.pdfjsLib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) });
-  const pdf = await loadingTask.promise;
-  const lines = [];
-  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-    const page = await pdf.getPage(pageNumber);
-    const text = await page.getTextContent();
-    lines.push(...groupPdfTextItems(text.items));
+  if (file.size > PDF_MAX_FILE_SIZE) throw new Error("PDF_TOO_LARGE");
+  if (file.type && file.type !== "application/pdf" && !/\.pdf$/i.test(file.name)) throw new Error("PDF_INVALID");
+
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_WORKER_URL;
+  let loadingTask = null;
+  let pdf = null;
+  try {
+    const data = new Uint8Array(await file.arrayBuffer());
+    loadingTask = window.pdfjsLib.getDocument({ data });
+    pdf = await loadingTask.promise;
+    const rows = [];
+    let textItemCount = 0;
+
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      const page = await pdf.getPage(pageNumber);
+      const text = await page.getTextContent();
+      textItemCount += text.items.filter((item) => String(item.str || "").trim()).length;
+      rows.push(...groupPdfTextItems(text.items, pageNumber));
+      page.cleanup();
+    }
+
+    if (!textItemCount) throw new Error("PDF_EMPTY_TEXT");
+    const parsed = window.GatesPdfParser.parseDocumentRows(
+      rows,
+      file.name,
+      app.state.transactions,
+      { fallbackYear: new Date().getFullYear(), today: toISO(new Date()) }
+    );
+    if (!parsed.transactions.length) throw new Error("PDF_NO_TRANSACTIONS");
+    return parsed.transactions.map((item) => ({ ...item, id: item.id || uid("transaction") }));
+  } catch (error) {
+    if ([
+      "PDF_LIBRARY_UNAVAILABLE", "PDF_INVALID", "PDF_PASSWORD_PROTECTED", "PDF_TOO_LARGE",
+      "PDF_EMPTY_TEXT", "PDF_NO_TRANSACTIONS", "PDF_PROCESSING_FAILED"
+    ].includes(error?.message)) throw error;
+    if (error?.name === "PasswordException" || error?.code === 1 || error?.code === 2) {
+      throw new Error("PDF_PASSWORD_PROTECTED");
+    }
+    if (["InvalidPDFException", "MissingPDFException", "UnexpectedResponseException"].includes(error?.name)) {
+      throw new Error("PDF_INVALID");
+    }
+    throw new Error("PDF_PROCESSING_FAILED");
+  } finally {
+    try {
+      if (pdf) await pdf.destroy();
+      else if (loadingTask?.destroy) await loadingTask.destroy();
+    } catch {
+      // PDF.js cleanup failures do not change the import result.
+    }
   }
-  const existing = new Set(app.state.transactions.map(transactionFingerprint));
-  return lines
-    .map((line) => parseStatementLine(line, file.name))
-    .filter(Boolean)
-    .filter((item, index, items) => items.findIndex((candidate) => transactionFingerprint(candidate) === transactionFingerprint(item)) === index)
-    .map((item) => ({ ...item, duplicate: existing.has(transactionFingerprint(item)) }));
 }
 
-function renderPdfImportPreview(file, transactions) {
+function pdfImportErrorMessage(code) {
+  return {
+    PDF_LIBRARY_UNAVAILABLE: "O leitor de PDF não foi carregado.",
+    PDF_INVALID: "Este arquivo não é um PDF válido.",
+    PDF_PASSWORD_PROTECTED: "Este PDF está protegido por senha.",
+    PDF_TOO_LARGE: "O arquivo excede o tamanho permitido.",
+    PDF_EMPTY_TEXT: "Este PDF não possui texto selecionável.",
+    PDF_NO_TRANSACTIONS: "Nenhuma movimentação foi identificada neste documento.",
+    PDF_PROCESSING_FAILED: "Não foi possível processar o PDF."
+  }[code] || "Não foi possível processar o PDF.";
+}
+
+function renderPdfImportPreview(file, transactions, errorCode = "") {
   app.pendingImport = { type: "pdf", transactions };
   const selectable = transactions.filter((item) => !item.duplicate).length;
+  const emptyMessage = errorCode ? pdfImportErrorMessage(errorCode) : "Nenhuma movimentação identificada.";
   els.importTitle.textContent = "Revisar extrato PDF";
   els.importBody.innerHTML = `
     <div class="import-review-note">
       <strong>${transactions.length ? `${transactions.length} movimentações encontradas` : "Nenhuma movimentação identificada"}</strong>
-      <span>${transactions.length ? `${selectable} disponíveis para importar. Revise o tipo de cada item.` : "O PDF pode ser uma imagem ou usar um formato não reconhecido."}</span>
+      <span>${transactions.length ? `${selectable} disponíveis para importar. Revise o tipo de cada item.` : escapeHTML(emptyMessage)}</span>
     </div>
     ${transactions.length ? `
       <div class="import-preview-list">
@@ -2959,16 +3009,23 @@ function renderPdfImportPreview(file, transactions) {
 }
 
 async function preparePdfImport(file) {
+  if (app.pdfImportInProgress) return;
+  app.pdfImportInProgress = true;
   els.importTitle.textContent = "Lendo extrato";
   els.importBody.innerHTML = '<div class="import-loading">Analisando as movimentações do PDF...</div>';
   els.importActions.classList.add("hidden");
-  const transactions = await extractPdfTransactions(file);
-  renderPdfImportPreview(file, transactions);
+  try {
+    const transactions = await extractPdfTransactions(file);
+    renderPdfImportPreview(file, transactions);
+  } finally {
+    app.pdfImportInProgress = false;
+  }
 }
 
 function confirmPreparedImport() {
-  if (!app.pendingImport) return;
+  if (!app.pendingImport || app.importConfirming) return;
   if (app.pendingImport.type === "json") {
+    app.importConfirming = true;
     app.state = app.pendingImport.state;
     app.currentView = app.state.currentView;
     app.chartRange = app.state.chartRange;
@@ -2979,31 +3036,60 @@ function confirmPreparedImport() {
     renderAll();
     closeImportModal();
     showToast("Backup JSON restaurado.");
+    app.importConfirming = false;
     return;
   }
 
-  const selectedItems = [...els.importBody.querySelectorAll("[data-import-index]")]
+  const selectedRows = [...els.importBody.querySelectorAll("[data-import-index]")]
     .filter((row) => row.querySelector('input[type="checkbox"]').checked)
-    .map((row) => {
-      const source = app.pendingImport.transactions[Number(row.dataset.importIndex)];
-      const type = row.querySelector("select").value;
-      return normalizeTransaction({
-        ...source,
-        type,
-        description: row.querySelector('.import-preview-copy input').value,
-        category: categoriesForType(type)[0]?.id || ""
-      });
-    })
-    .filter(Boolean);
-  if (!selectedItems.length) {
+    .map((row) => ({
+      row,
+      source: app.pendingImport.transactions[Number(row.dataset.importIndex)]
+    }));
+  if (!selectedRows.length) {
     showToast("Selecione ao menos um lançamento.");
     return;
   }
-  app.state.transactions.push(...selectedItems);
-  saveState();
-  renderAll();
-  closeImportModal();
-  showToast(`${selectedItems.length} ${selectedItems.length === 1 ? "lançamento importado" : "lançamentos importados"}.`);
+
+  app.importConfirming = true;
+  els.importConfirm.disabled = true;
+  try {
+    const stagedCategories = cloneCategories(app.state.categories);
+    const selectedItems = selectedRows.map(({ row, source }) => {
+      const type = row.querySelector("select").value;
+      const description = row.querySelector('.import-preview-copy input').value.trim();
+      if (!description) return null;
+      const category = window.GatesPdfParser.resolveCategory(
+        stagedCategories,
+        type,
+        description,
+        true
+      );
+      return normalizeTransaction({
+        ...source,
+        type,
+        description,
+        category
+      }, stagedCategories);
+    })
+    .filter(Boolean);
+    if (!selectedItems.length) {
+      showToast("Nenhum lançamento válido foi selecionado.");
+      els.importConfirm.disabled = false;
+      return;
+    }
+    app.state.categories = stagedCategories;
+    app.state.transactions.push(...selectedItems);
+    saveState();
+    renderAll();
+    closeImportModal();
+    showToast(`${selectedItems.length} ${selectedItems.length === 1 ? "lançamento importado" : "lançamentos importados"}.`);
+  } catch {
+    showToast("Não foi possível concluir a importação.");
+    els.importConfirm.disabled = false;
+  } finally {
+    app.importConfirming = false;
+  }
 }
 
 function bindEvents() {
@@ -3229,12 +3315,17 @@ function bindEvents() {
   els.importPdfInput.addEventListener("change", async () => {
     const [file] = els.importPdfInput.files;
     els.importPdfInput.value = "";
-    if (!file) return;
+    if (!file || app.pdfImportInProgress) return;
     try {
       await preparePdfImport(file);
     } catch (error) {
-      showToast(error?.message === "PDF_LIBRARY_UNAVAILABLE" ? "Leitor de PDF indisponível." : "Não foi possível ler este PDF.");
-      renderImportChoices();
+      const code = error?.message || "PDF_PROCESSING_FAILED";
+      showToast(pdfImportErrorMessage(code));
+      if (["PDF_EMPTY_TEXT", "PDF_NO_TRANSACTIONS"].includes(code)) {
+        renderPdfImportPreview(file, [], code);
+      } else {
+        renderImportChoices();
+      }
     }
   });
 

@@ -3,6 +3,7 @@ data/financeiro.json
 
 # Dependencies
 node_modules/
+.wrangler/
 
 # Logs
 *.log

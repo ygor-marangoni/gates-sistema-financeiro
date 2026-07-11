@@ -1341,7 +1341,7 @@ body.drawer-open {
 }
 
 .insight-tone {
-    width: 0.45rem;
+    width: 0.3rem;
     border-radius: 999px;
     background: var(--primary);
 }
@@ -2038,6 +2038,11 @@ body.dark-mode .budget-category-icon {
 .planning-upcoming-item {
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
+}
+
+.planning-upcoming-item > div:first-child {
+    display: grid;
+    gap: 0.08rem;
 }
 
 .planning-upcoming-item > div:last-child {
@@ -4039,17 +4044,58 @@ body.dark-mode .cashflow-summary span {
         grid-column: 1 / -1;
     }
 
-    .budget-row,
-    .week-compact-row,
-    .planning-upcoming-item {
+    .budget-row {
         grid-template-columns: 1fr;
     }
 
-    .budget-row-meta,
-    .week-compact-values,
-    .planning-upcoming-item > div:last-child {
+    .budget-row-meta {
         justify-items: start;
         text-align: left;
+    }
+
+    .insight-card {
+        align-items: center;
+        padding: 0.9rem 1rem;
+    }
+
+    .insight-card > div {
+        text-align: center;
+    }
+
+    .week-compact-row {
+        grid-template-columns: 3px minmax(0, 1fr);
+        align-items: center;
+        min-height: 0;
+        row-gap: 0.28rem;
+        padding: 0.75rem 0.8rem;
+    }
+
+    .week-balance-bar {
+        grid-row: 1 / span 2;
+        align-self: stretch;
+        height: auto;
+        min-height: 2.25rem;
+    }
+
+    .week-compact-values {
+        grid-column: 2;
+        justify-items: start;
+        text-align: left;
+    }
+
+    .week-compact-values span,
+    .week-compact-values strong {
+        white-space: normal;
+    }
+
+    .planning-upcoming-item {
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 0.6rem;
+    }
+
+    .planning-upcoming-item > div:last-child {
+        justify-items: end;
+        text-align: right;
     }
 
     .budget-footer {
@@ -4305,8 +4351,10 @@ body.dark-mode #goalsView .goal-item:hover {
     }
 
     .goals-new-button svg {
-        width: 1.1rem;
-        height: 1.1rem;
+        width: 1.5rem;
+        height: 1.3rem;
+        position: relative;
+        left: 4.3px;
     }
 
     .goals-progress-summary {

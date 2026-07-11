@@ -1,0 +1,10 @@
+{
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js",
+    "pages:dev": "wrangler pages dev . --kv=FINANCE_DATA"
+  },
+  "devDependencies": {
+    "wrangler": "^4.110.0"
+  }
+}
