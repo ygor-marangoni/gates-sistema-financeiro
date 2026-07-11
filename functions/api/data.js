@@ -1,99 +1,56 @@
-import {
-  SESSION_COOKIE_NAME,
-  AuthError,
-  authErrorResponse,
-  clearCookieHeader,
-  jsonResponse,
-  readSession,
-  requestHasExpectedOrigin,
-  requestHasValidCsrf,
-  requireDataStore
-} from "../../cloudflare-auth.mjs";
-
+const DATA_KEY = "financeiro";
 const MAX_PAYLOAD_SIZE = 1_000_000;
-const decoder = new TextDecoder();
-const encoder = new TextEncoder();
 
-async function readJsonWithinLimit(request) {
-  const declaredSize = Number(request.headers.get("Content-Length"));
-  if (Number.isFinite(declaredSize) && declaredSize > MAX_PAYLOAD_SIZE) {
-    throw new AuthError("PAYLOAD_TOO_LARGE", 413);
-  }
-  if (!request.body) throw new AuthError("JSON_INVALID", 400);
+const responseHeaders = {
+  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Methods": "GET, PUT, OPTIONS",
+  "Access-Control-Allow-Origin": "*",
+  "Cache-Control": "no-store",
+  "Content-Type": "application/json; charset=utf-8"
+};
 
-  const reader = request.body.getReader();
-  const chunks = [];
-  let size = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > MAX_PAYLOAD_SIZE) {
-        await reader.cancel();
-        throw new AuthError("PAYLOAD_TOO_LARGE", 413);
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  try {
-    return JSON.parse(decoder.decode(bytes));
-  } catch {
-    throw new AuthError("JSON_INVALID", 400);
-  }
-}
-
-function unauthenticatedResponse() {
-  const response = jsonResponse({ error: "Autenticacao necessaria.", code: "AUTH_REQUIRED" }, 401);
-  response.headers.append("Set-Cookie", clearCookieHeader(SESSION_COOKIE_NAME));
-  return response;
+function jsonResponse(body, status = 200) {
+  return new Response(JSON.stringify(body), { status, headers: responseHeaders });
 }
 
 export async function onRequest({ request, env }) {
-  try {
-    if (request.method !== "GET" && request.method !== "PUT") {
-      return jsonResponse({ error: "Metodo nao permitido." }, 405, { Allow: "GET, PUT" });
-    }
-
-    const session = await readSession(request, env);
-    if (!session) return unauthenticatedResponse();
-    const store = requireDataStore(env);
-
-    if (request.method === "GET") {
-      const payload = await store.get(session.dataKey, "json");
-      return jsonResponse(payload && typeof payload === "object" ? payload : {});
-    }
-
-    if (!requestHasExpectedOrigin(request, env)) throw new AuthError("ORIGIN_INVALID", 403);
-    if (!await requestHasValidCsrf(request, session)) throw new AuthError("CSRF_INVALID", 403);
-    const contentType = request.headers.get("Content-Type") || "";
-    if (!contentType.toLowerCase().startsWith("application/json")) {
-      throw new AuthError("CONTENT_TYPE_INVALID", 415);
-    }
-
-    const payload = await readJsonWithinLimit(request);
-    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-      throw new AuthError("PAYLOAD_INVALID", 400);
-    }
-    const serialized = JSON.stringify(payload);
-    if (encoder.encode(serialized).byteLength > MAX_PAYLOAD_SIZE) {
-      throw new AuthError("PAYLOAD_TOO_LARGE", 413);
-    }
-
-    await store.put(session.dataKey, serialized, {
-      metadata: { updatedAt: new Date().toISOString() }
-    });
-    return jsonResponse(payload);
-  } catch (error) {
-    return authErrorResponse(error, "Nao foi possivel acessar os dados financeiros.");
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: responseHeaders });
   }
+
+  if (!env.FINANCE_DATA) {
+    return jsonResponse({ error: "Armazenamento financeiro nao configurado." }, 503);
+  }
+
+  if (request.method === "GET") {
+    const payload = await env.FINANCE_DATA.get(DATA_KEY, "json");
+    return payload
+      ? jsonResponse(payload)
+      : jsonResponse({});
+  }
+
+  if (request.method !== "PUT") {
+    return jsonResponse({ error: "Metodo nao permitido." }, 405);
+  }
+
+  let payload;
+  try {
+    payload = await request.json();
+  } catch {
+    return jsonResponse({ error: "JSON invalido." }, 400);
+  }
+
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return jsonResponse({ error: "O payload financeiro precisa ser um objeto JSON." }, 400);
+  }
+
+  const serialized = JSON.stringify(payload);
+  if (serialized.length > MAX_PAYLOAD_SIZE) {
+    return jsonResponse({ error: "O arquivo financeiro excede o limite permitido." }, 413);
+  }
+
+  await env.FINANCE_DATA.put(DATA_KEY, serialized, {
+    metadata: { updatedAt: new Date().toISOString() }
+  });
+  return jsonResponse(payload);
 }

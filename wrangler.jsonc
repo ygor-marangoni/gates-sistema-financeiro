@@ -3,9 +3,6 @@
   "name": "gates",
   "compatibility_date": "2026-07-11",
   "pages_build_output_dir": "./",
-  "vars": {
-    "APP_ORIGIN": "https://gates-financas.pages.dev"
-  },
   "kv_namespaces": [
     {
       "binding": "FINANCE_DATA",
