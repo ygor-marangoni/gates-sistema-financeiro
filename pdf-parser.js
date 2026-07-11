@@ -261,7 +261,11 @@
 
   function parseMoneyAtEnd(line, context = {}) {
     const pattern = /(?<![\/\d])(\()?\s*([+-])?\s*(?:(?:R\$|US\$|BRL|USD|EUR|€|\$)\s*)?([+-])?\s*((?:(?:\d{1,3}(?:\.\d{3})+|\d{1,3}(?:\s\d{3})+|\d+),\d{2}|(?:\d{1,3}(?:,\d{3})+|\d{1,3}(?:\s\d{3})+|\d+)\.\d{2}|[.,]\d{2}))\s*([+-])?\s*(CR|DR|C|D)?\s*(\))?(?![\d./-])/gi;
-    const matches = [...String(line || "").matchAll(pattern)];
+    const source = String(line || "");
+    const matches = [...source.matchAll(pattern)].filter((candidate) => {
+      const prefix = comparable(source.slice(Math.max(0, candidate.index - 24), candidate.index));
+      return !/(?:^|\s)(?:DOC|DOCTO|DOCUMENTO|NSU|IDENTIFICADOR|ID)\s*[:#-]?\s*$/.test(prefix);
+    });
     if (!matches.length) return null;
     const match = context.documentType === "bank_statement" && matches.length > 1
       ? matches[0]
@@ -281,6 +285,7 @@
   function isSummaryLine(line, context = {}) {
     const normalized = comparable(line);
     if (SUMMARY_PHRASES.some((phrase) => normalized.includes(phrase))) return true;
+    if (/^(?:TOTAL|SUBTOTAL)(?:\s|$)/.test(normalized)) return true;
     if (normalized.includes("VALORES EM R$")) return true;
     if (/^\d{1,2}\s+(?:DE\s+)?[A-Z]{3,10}(?:\s+DE)?\s+20\d{2}\s+A\s+\d{1,2}\s+(?:DE\s+)?[A-Z]{3,10}/.test(normalized)) return true;
     if (context.documentType === "credit_card_invoice" && /\bPAGAMENTO (?:DA )?FATURA\b/.test(normalized)) return true;
@@ -435,15 +440,6 @@
       .trim();
   }
 
-  function normalizeOcrColumnAmount(value) {
-    const compact = String(value || "").replace(/[^\d.,]/g, "");
-    if (/^0?\d{1,2}$/.test(compact)) {
-      const cents = compact.replace(/^0/, "").padStart(2, "0");
-      return `0.${cents}`;
-    }
-    return compact;
-  }
-
   function structuredHeader(row) {
     const date = headerXAny(row, ["DATA", "DATE", "DT", "DATA DA COMPRA", "TRANSACTION DATE"]);
     const description = headerXAny(row, ["DESCRICAO", "DESCRIPTION", "LANCAMENTO", "ESTABELECIMENTO", "HISTORICO", "MERCHANT"]);
@@ -526,6 +522,10 @@
       if (!table) continue;
 
       if (table.type === "bank") {
+        if (isSummaryLine(row.text, { documentType: "bank_statement" })) {
+          bankDescription = "";
+          continue;
+        }
         const date = bankColumn(row, "date");
         const description = bankColumn(row, "description");
         const debit = bankColumn(row, "debit");
@@ -534,10 +534,11 @@
         const usefulDescription = description && !/^\d{4,}$/.test(description) ? description : "";
         if (usefulDescription) bankDescription = usefulDescription;
         const amount = debit || credit;
-        if (!bankDate || !amount || !parseMoneyAtEnd(amount)) continue;
+        const parsedAmount = parseMoneyAtEnd(amount, { documentType: "bank_statement" });
+        if (!bankDate || !parsedAmount) continue;
         normalized.push({
           ...row,
-          text: cleanDescription(`${bankDate} ${bankDescription || usefulDescription || "Movimentacao"} ${normalizeOcrColumnAmount(amount)} ${debit ? "D" : "C"}`)
+          text: cleanDescription(`${bankDate} ${bankDescription || usefulDescription || "Movimentacao"} ${parsedAmount.amount.toFixed(2)} ${debit ? "D" : "C"}`)
         });
         bankDescription = "";
         continue;

@@ -366,10 +366,21 @@ test("Bradesco associa histórico anterior às colunas de crédito e débito", (
     {
       page: 1, y: 840, text: "2008079 16,00 0,00",
       items: [{ text: "2008079", x: 303 }, { text: "16,00", x: 473 }, { text: "0,00", x: 537 }]
+    },
+    {
+      page: 1, y: 820, text: "Total 16,00 16,00 0,00",
+      items: [{ text: "Total", x: 110 }, { text: "16,00", x: 409 }, { text: "16,00", x: 473 }, { text: "0,00", x: 537 }]
     }
   ];
   const result = parser.parseDocumentRows(rows, "bradesco.pdf", [], { fallbackYear: 2026 });
   assert.equal(result.transactions.length, 2);
   assert.deepEqual(result.transactions.map((item) => item.description), ["PIX RECEBIDO", "PIX ENVIADO"]);
   assert.deepEqual(result.transactions.map((item) => item.type), ["income", "expense"]);
+  assert.deepEqual(result.transactions.map((item) => item.amount), [16, 16]);
+});
+
+test("número de documento monetário não substitui o valor da movimentação", () => {
+  const item = parse("10/06 DOC: 300.000,00 COMPRA MERCADO 100,00 SALDO 500,00");
+  assert.equal(item.amount, 100);
+  assert.equal(item.description, "DOC: 300.000,00 COMPRA MERCADO");
 });

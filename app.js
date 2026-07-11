@@ -759,6 +759,7 @@ function controlLabel(field) {
 }
 
 function controlKind(field) {
+  if (field.closest(".import-preview-row")) return "import";
   if (field.classList.contains("filter-select")) return "filter";
   if (field.classList.contains("chart-select")) return "chart";
   if (field.closest(".category-form")) return "category-form";
@@ -811,6 +812,7 @@ function repositionCustomFormControls() {
 }
 
 function initCustomSelectControls() {
+  pruneCustomFormControls();
   document.querySelectorAll("select").forEach((select) => {
     if (select.dataset.customControl === "true") return;
     select.dataset.customControl = "true";
@@ -833,7 +835,7 @@ function initCustomSelectControls() {
     trigger.setAttribute("aria-label", controlLabel(select));
     valueNode.className = "custom-control-value";
     caret.className = "custom-control-caret";
-    list.className = "custom-select-menu";
+    list.className = `custom-select-menu custom-select-menu-${kind}`;
     list.setAttribute("role", "listbox");
     list.hidden = true;
 
@@ -957,15 +959,29 @@ function initCustomSelectControls() {
     });
 
     select.addEventListener("change", sync);
+    control.field = select;
     control.close = close;
     control.sync = () => {
       buildOptions();
       sync();
     };
+    control.destroy = () => {
+      close();
+      list.remove();
+    };
     customFormControls.push(control);
     buildOptions();
     sync();
   });
+}
+
+function pruneCustomFormControls() {
+  for (let index = customFormControls.length - 1; index >= 0; index -= 1) {
+    const control = customFormControls[index];
+    if (control.field?.isConnected) continue;
+    control.destroy?.();
+    customFormControls.splice(index, 1);
+  }
 }
 
 function formatDateControlValue(iso) {
@@ -3251,6 +3267,7 @@ function renderPdfImportPreview(file, transactions, errorCode = "") {
       </div>
     ` : ""}
   `;
+  initCustomSelectControls();
   updatePdfImportSelection();
   els.importActions.classList.remove("hidden");
 }
@@ -3597,6 +3614,7 @@ function bindEvents() {
       const categorySelect = row.querySelector(".import-preview-category");
       const description = row.querySelector(".import-preview-copy input").value.trim();
       categorySelect.innerHTML = pdfCategoryOptions(event.target.value, "", description);
+      syncCustomFormControls();
       return;
     }
     if (event.target.classList.contains("import-row-checkbox")) updatePdfImportSelection();

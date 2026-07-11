@@ -802,6 +802,20 @@ input[type="date"]::-webkit-calendar-picker-indicator {
     padding: 0.35rem;
 }
 
+.custom-select-menu-import {
+    z-index: 500;
+}
+
+.custom-control-import .custom-control-trigger {
+    min-height: 2.2rem;
+    border-color: var(--line);
+    border-radius: 6px;
+    background: var(--surface);
+    padding: 0 0.55rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
 .custom-select-option {
     display: flex;
     width: 100%;
@@ -2855,6 +2869,8 @@ body[data-view="goals"] .metrics-grid {
 }
 
 .pdf-review-mode .import-body {
+    display: flex;
+    flex-direction: column;
     min-height: 0;
     overflow: hidden;
 }
@@ -3109,10 +3125,13 @@ body[data-view="goals"] .metrics-grid {
 
 .import-preview-list {
     display: grid;
+    min-height: 0;
+    flex: 1 1 auto;
     gap: 0.5rem;
-    max-height: min(49dvh, 28rem);
+    max-height: none;
     overflow-y: auto;
-    padding-right: 0.2rem;
+    padding: 0 0.2rem 0.8rem 0;
+    scroll-padding-bottom: 0.8rem;
 }
 
 .import-preview-row {
@@ -3495,13 +3514,29 @@ body[data-view="goals"] .metrics-grid {
     border-color: var(--text-soft);
 }
 
+.color-swatch-option.active::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 1.15rem;
+    height: 1.15rem;
+    border-radius: 50%;
+    background: rgba(15, 23, 42, 0.62);
+    transform: translate(-50%, -50%);
+}
+
 .color-swatch-option.active::after {
     content: "";
     position: absolute;
-    inset: 0.45rem;
+    top: 46%;
+    left: 50%;
+    width: 0.38rem;
+    height: 0.68rem;
     border-right: 2px solid #ffffff;
     border-bottom: 2px solid #ffffff;
-    transform: rotate(45deg) translate(-1px, -1px);
+    z-index: 1;
+    transform: translate(-50%, -55%) rotate(45deg);
 }
 
 .color-hex-field {
@@ -4448,7 +4483,7 @@ body.dark-mode #goalsView .goal-item:hover {
     }
 
     .import-preview-list {
-        max-height: 51dvh;
+        max-height: none;
     }
 
     .import-preview-row {
