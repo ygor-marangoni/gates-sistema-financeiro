@@ -4358,6 +4358,7 @@ body.dark-mode .cashflow-summary span {
 
     .color-picker-popover {
         width: min(17.5rem, calc(100vw - 2rem));
+        left: 0px;
     }
 
     .metric-card {
