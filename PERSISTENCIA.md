@@ -18,7 +18,9 @@ O servidor grava cada alteracao em `data/financeiro.json`. Esse arquivo fica ign
 
 O deploy pelo Git nao utiliza um comando de deploy. A funcao em `functions/api/data.js` cria o endpoint `/api/data` e salva o mesmo payload JSON em KV.
 
-No painel do projeto Pages, abra `Settings > Bindings`, adicione um binding do tipo `KV namespace` com o nome `FINANCE_DATA` e refaca o deploy. O namespace precisa ser criado no painel antes de ser associado.
+O arquivo `wrangler.jsonc` declara o binding `FINANCE_DATA`. No primeiro deploy com essa configuracao, o Cloudflare provisiona e vincula o namespace automaticamente. Se o endpoint responder `503`, confirme que o deploy mais recente usou o `wrangler.jsonc` e refaca o deploy.
+
+Como alternativa pelo painel, abra `Settings > Bindings`, adicione um binding do tipo `KV namespace` com o nome exato `FINANCE_DATA`, selecione um namespace e refaca o deploy. Bindings so entram em vigor depois de uma nova implantacao.
 
 Para este projeto sem framework, deixe o Build command vazio (ou use `exit 0`), o Root directory vazio e o Build output directory como `.`.
 

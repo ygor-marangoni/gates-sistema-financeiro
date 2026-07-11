@@ -4,6 +4,10 @@ data/financeiro.json
 # Dependencies
 node_modules/
 .wrangler/
+tmp/
+*.traineddata
+/dummy_statement.pdf
+/fatura teste.pdf
 
 # Logs
 *.log

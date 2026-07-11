@@ -55,23 +55,26 @@
 
   function datePartsAtStart(line) {
     const normalized = comparable(line);
-    const numeric = normalized.match(/^\s*(\d{1,2})\s*[\/.\-]\s*(\d{1,2})(?:\s*[\/.\-]\s*(\d{2,4}))?\b/);
+    const weekday = "(?:(?:SEG|TER|QUA|QUI|SEX|SAB|DOM)\\.?[,]?\\s+)?";
+    const numeric = normalized.match(new RegExp(`^\\s*${weekday}(\\d{1,2})\\s*[\\/.\\-]\\s*(\\d{1,2})(?:\\s*[\\/.\\-]\\s*(\\d{2,4}))?\\b`));
     if (numeric) {
       return {
         day: Number(numeric[1]),
         month: Number(numeric[2]),
         year: numeric[3] ? Number(numeric[3]) : null,
+        numeric: true,
         length: numeric[0].length,
         raw: numeric[0]
       };
     }
 
-    const textual = normalized.match(/^\s*(\d{1,2})\s+(?:DE\s+)?([A-Z]{3,10})(?:\s+(?:DE\s+)?(\d{4}))?\b/);
+    const textual = normalized.match(new RegExp(`^\\s*${weekday}(\\d{1,2})\\s+(?:DE\\s+)?([A-Z]{3,10})\\.?(?:\\s+(?:DE\\s+)?(\\d{4}))?\\b`));
     if (!textual || !MONTHS[textual[2]]) return null;
     return {
       day: Number(textual[1]),
       month: MONTHS[textual[2]],
       year: textual[3] ? Number(textual[3]) : null,
+      numeric: false,
       length: textual[0].length,
       raw: textual[0]
     };
@@ -114,10 +117,12 @@
   function parseStatementDate(value, context = {}) {
     const parts = typeof value === "string" ? datePartsAtStart(value) : value;
     if (!parts) return "";
+    const month = parts.numeric && context.dateOrder === "mdy" ? parts.day : parts.month;
+    const day = parts.numeric && context.dateOrder === "mdy" ? parts.month : parts.day;
     let year = parts.year;
     if (year !== null && year < 100) year += 2000;
-    if (year === null) year = inferYear(parts.month, parts.day, context);
-    return isoDate(year, parts.month, parts.day);
+    if (year === null) year = inferYear(month, day, context);
+    return isoDate(year, month, day);
   }
 
   function explicitDateFromText(value) {
@@ -131,13 +136,20 @@
     const text = comparable(allText);
     const invoiceScore = ["FATURA", "PAGAMENTO MINIMO", "LIMITE", "MELHOR DIA DE COMPRA"]
       .filter((term) => text.includes(term)).length;
-    const statementScore = ["EXTRATO", "CONTA CORRENTE", "AGENCIA", "PIX", "TED", "TRANSFERENCIA"]
+    const statementScore = [
+      "EXTRATO", "CONTA CORRENTE", "AGENCIA", "PIX", "TED", "TRANSFERENCIA",
+      "STATEMENT OF ACCOUNT", "ACCOUNT TRANSACTIONS", "DEPOSITS AND OTHER CREDITS",
+      "WITHDRAWALS AND OTHER DEBITS"
+    ]
       .filter((term) => text.includes(term)).length;
     const documentType = invoiceScore >= 1 || text.includes("FATURA DO CARTAO")
       ? "credit_card_invoice"
-      : statementScore >= 2 || text.includes("EXTRATO BANCARIO")
+      : statementScore >= 2 || text.includes("EXTRATO BANCARIO") || text.includes("STATEMENT OF ACCOUNT")
         ? "bank_statement"
         : "unknown";
+    const dateOrder = /\b(?:STATEMENT OF ACCOUNT|ACCOUNT TRANSACTIONS|DEPOSITS AND OTHER CREDITS)\b/.test(text)
+      ? "mdy"
+      : "dmy";
 
     let periodStart = "";
     let periodEnd = "";
@@ -193,26 +205,35 @@
       referenceMonth,
       periodStart,
       periodEnd,
+      dateOrder,
       fallbackYear: options.fallbackYear || new Date().getFullYear(),
       today: options.today || ""
     };
   }
 
+  function parseMoneyNumber(value) {
+    const compact = String(value || "").replace(/\s/g, "").replace(/^[+-]/, "");
+    const lastComma = compact.lastIndexOf(",");
+    const lastDot = compact.lastIndexOf(".");
+    const decimalSeparator = lastComma > lastDot ? "," : ".";
+    const thousandsSeparator = decimalSeparator === "," ? /\./g : /,/g;
+    return Number(compact.replace(thousandsSeparator, "").replace(decimalSeparator, "."));
+  }
+
   function parseMoneyAtEnd(line, context = {}) {
-    const pattern = /(?<![\/\d])(?:R\$\s*)?([+-]?\s*(?:(?:\d{1,3}(?:[.\s]\d{3})+)|\d+),\d{2})\s*([+-])?\s*([DC])?/gi;
+    const pattern = /(?<![\/\d])([+-])?\s*(?:(?:R\$|\$)\s*)?([+-]?\s*(?:(?:\d{1,3}(?:\.\d{3})+|\d{1,3}(?:\s\d{3})+|\d+),\d{2}|(?:\d{1,3}(?:,\d{3})+|\d{1,3}(?:\s\d{3})+|\d+)\.\d{2}))\s*([+-])?\s*([DC])?(?![\d./-])/gi;
     const matches = [...String(line || "").matchAll(pattern)];
     if (!matches.length) return null;
     const match = context.documentType === "bank_statement" && matches.length > 1
       ? matches[0]
       : matches[matches.length - 1];
-    const numeric = match[1].replace(/\s/g, "").replace(/^[+-]/, "").replace(/\./g, "").replace(",", ".");
-    const amount = Number(numeric);
+    const amount = parseMoneyNumber(match[2]);
     if (!Number.isFinite(amount) || amount <= 0) return null;
-    const prefixSign = match[1].trim().startsWith("-") ? "-" : match[1].trim().startsWith("+") ? "+" : "";
+    const inlineSign = match[2].trim().startsWith("-") ? "-" : match[2].trim().startsWith("+") ? "+" : "";
     return {
       amount,
-      indicator: String(match[3] || "").toUpperCase(),
-      sign: match[2] || prefixSign,
+      indicator: String(match[4] || "").toUpperCase(),
+      sign: match[3] || match[1] || inlineSign,
       index: match.index,
       raw: match[0]
     };
@@ -241,8 +262,8 @@
     if (creditWords.some((word) => normalized.includes(word))) return "income";
     if (debitWords.some((word) => normalized.includes(word))) return "expense";
     if (money.sign === "-") return "expense";
-    if (money.sign === "+" && context.documentType === "bank_statement") return "income";
-    return context.documentType === "bank_statement" && money.sign === "+" ? "income" : "expense";
+    if (money.sign === "+") return "income";
+    return "expense";
   }
 
   function cleanDescription(value) {
@@ -270,7 +291,8 @@
       amount: money.amount,
       date,
       category: "",
-      account: "Extrato importado",
+      categoryLabel: typeof line === "object" ? String(line.categoryLabel || "") : "",
+      account: typeof line === "object" && line.account ? String(line.account) : "Extrato importado",
       recurring: false,
       notes: `Importado de ${fileName}`
     };
@@ -323,6 +345,116 @@
         });
         return { page, text: cleanDescription(text), items: ordered, y: row.y };
       });
+  }
+
+  function rowItemText(item) {
+    return String(item?.text ?? item?.str ?? "").trim();
+  }
+
+  function rowItemX(item) {
+    return Number(item?.x ?? item?.transform?.[4] ?? 0);
+  }
+
+  function headerX(row, label) {
+    const item = (row.items || []).find((candidate) => comparable(rowItemText(candidate)) === label);
+    return item ? rowItemX(item) : null;
+  }
+
+  function textInColumn(row, start, end = Infinity) {
+    return (row.items || [])
+      .filter((item) => rowItemX(item) >= start - 2 && rowItemX(item) < end - 2)
+      .sort((a, b) => rowItemX(a) - rowItemX(b))
+      .map(rowItemText)
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+  }
+
+  function normalizeOcrColumnAmount(value) {
+    const compact = String(value || "").replace(/[^\d.,]/g, "");
+    if (/^0?\d{1,2}$/.test(compact)) {
+      const cents = compact.replace(/^0/, "").padStart(2, "0");
+      return `0.${cents}`;
+    }
+    return compact;
+  }
+
+  function structuredHeader(row) {
+    const text = comparable(row.text);
+    if (/\bDATA\s+DESCRICAO\s+CATEGORIA\s+CONTA\s+VALOR\b/.test(text)) {
+      const starts = ["DATA", "DESCRICAO", "CATEGORIA", "CONTA", "VALOR"].map((label) => headerX(row, label));
+      return starts.every(Number.isFinite) ? { type: "gates", starts } : null;
+    }
+    if (/\bDATE\s+DESCRIPTION\s+DEBIT\s+CREDIT\s+BALANCE\b/.test(text)) {
+      const starts = ["DATE", "DESCRIPTION", "DEBIT", "CREDIT", "BALANCE"].map((label) => headerX(row, label));
+      return starts.every(Number.isFinite) ? { type: "bank", starts } : null;
+    }
+    return null;
+  }
+
+  function normalizeStructuredTableRows(rows) {
+    const ordered = [...(rows || [])].sort((a, b) => a.page - b.page || b.y - a.y);
+    const normalized = [];
+    let page = null;
+    let table = null;
+    let foundTable = false;
+
+    for (const row of ordered) {
+      if (row.page !== page) {
+        page = row.page;
+      }
+      const header = structuredHeader(row);
+      if (header) {
+        table = {
+          ...header,
+          boundaries: [
+            -Infinity,
+            (header.starts[0] + header.starts[1]) / 2,
+            (header.starts[1] + header.starts[2]) / 2,
+            (header.starts[2] + header.starts[3]) / 2,
+            (header.starts[3] + header.starts[4]) / 2,
+            Infinity
+          ]
+        };
+        foundTable = true;
+        continue;
+      }
+      if (/\b(?:DATE|DATA)\s+DESCRIPTION|\bDATA\s+DESCRICAO/.test(comparable(row.text))) {
+        table = null;
+        continue;
+      }
+      if (!table || !datePartsAtStart(row.text)) continue;
+
+      const [dateStart, descriptionStart, thirdStart, fourthStart, fifthStart, tableEnd] = table.boundaries;
+      const date = textInColumn(row, dateStart, descriptionStart);
+      const description = textInColumn(row, descriptionStart, thirdStart);
+      if (!date || !description) continue;
+
+      if (table.type === "gates") {
+        const categoryLabel = textInColumn(row, thirdStart, fourthStart);
+        const account = textInColumn(row, fourthStart, fifthStart);
+        const amount = textInColumn(row, fifthStart, tableEnd);
+        if (!parseMoneyAtEnd(amount)) continue;
+        normalized.push({
+          ...row,
+          text: cleanDescription(`${date} ${description} ${amount}`),
+          categoryLabel,
+          account
+        });
+        continue;
+      }
+
+      const debit = textInColumn(row, thirdStart, fourthStart);
+      const credit = textInColumn(row, fourthStart, fifthStart);
+      const amount = debit || credit;
+      if (!amount) continue;
+      normalized.push({
+        ...row,
+        text: cleanDescription(`${date} ${description} ${normalizeOcrColumnAmount(amount)} ${credit ? "C" : "D"}`)
+      });
+    }
+
+    return foundTable ? normalized : rows;
   }
 
   function combineContinuationLines(rows) {
@@ -414,7 +546,7 @@
   function parseDocumentRows(rows, fileName, existingItems = [], options = {}) {
     const allText = (rows || []).map((row) => row.text).join("\n");
     const context = detectDocumentContext(allText, options);
-    const transactions = combineContinuationLines(rows)
+    const transactions = combineContinuationLines(normalizeStructuredTableRows(rows))
       .map((row) => parseStatementLine(row, fileName, context))
       .filter(Boolean);
     return { context, transactions: markDuplicates(transactions, existingItems) };
@@ -430,6 +562,7 @@
     inferTransactionType,
     isSummaryLine,
     markDuplicates,
+    normalizeStructuredTableRows,
     parseDocumentRows,
     parseMoneyAtEnd,
     parseStatementDate,

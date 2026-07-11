@@ -6,8 +6,9 @@ const fsp = fs.promises;
 const path = require("node:path");
 
 const root = __dirname;
-const dataDirectory = path.join(root, "data");
-const dataPath = path.join(dataDirectory, "financeiro.json");
+const dataPath = process.env.FINANCE_DATA_PATH
+  ? path.resolve(process.env.FINANCE_DATA_PATH)
+  : path.join(root, "data", "financeiro.json");
 const port = Number(process.env.PORT || 4173);
 
 const contentTypes = {
@@ -68,7 +69,7 @@ async function handleData(request, response) {
       sendJson(response, { error: "O payload financeiro precisa ser um objeto JSON." }, 400);
       return;
     }
-    await fsp.mkdir(dataDirectory, { recursive: true });
+    await fsp.mkdir(path.dirname(dataPath), { recursive: true });
     await fsp.writeFile(dataPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
     sendJson(response, payload);
   } catch (error) {

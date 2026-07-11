@@ -1219,22 +1219,31 @@
                                 </div>
                                 <label class="form-group">
                                     <span>Categoria</span>
-                                    <select
-                                        id="categoryInput"
-                                        required
-                                    ></select>
+                                    <select id="categoryInput"></select>
                                 </label>
-                                <label class="form-group">
-                                    <span>Conta</span>
-                                    <select id="accountInput"></select>
+                                <div class="form-group">
+                                    <span id="accountInputLabel">Conta</span>
+                                    <div class="account-control-row">
+                                        <select id="accountInput" aria-labelledby="accountInputLabel"></select>
+                                        <button
+                                            class="account-delete-button hidden"
+                                            id="btnDeleteAccount"
+                                            type="button"
+                                            aria-label="Excluir conta selecionada"
+                                            title="Excluir conta selecionada"
+                                        >
+                                            <i data-lucide="trash-2" aria-hidden="true"></i>
+                                        </button>
+                                    </div>
                                     <input
                                         class="hidden"
                                         id="customAccountInput"
                                         type="text"
                                         placeholder="Nome da nova conta"
                                         autocomplete="off"
+                                        aria-label="Nome da nova conta"
                                     />
-                                </label>
+                                </div>
                                 <label class="form-group">
                                     <span>Observação</span>
                                     <textarea
@@ -1369,7 +1378,7 @@
             aria-hidden="true"
         >
             <div class="confirm-modal">
-                <div class="confirm-icon" aria-hidden="true">
+                <div class="confirm-icon" id="confirmIcon" aria-hidden="true">
                     <svg
                         width="18"
                         height="18"
@@ -1415,6 +1424,7 @@
         <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
         <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js" defer></script>
         <script src="pdf-parser.js" defer></script>
+        <script src="account-utils.js" defer></script>
         <script
             src="https://cdn.jsdelivr.net/npm/lucide@1.23.0/dist/umd/lucide.min.js"
             defer

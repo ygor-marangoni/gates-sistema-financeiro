@@ -7,15 +7,25 @@ const DATA_SNAPSHOT_KEY = "gates_financeiro_data_snapshot_v1";
 const PDFJS_VERSION = "3.11.174";
 const PDF_MAX_FILE_SIZE = 20 * 1024 * 1024;
 const PDF_WORKER_URL = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.js`;
+const TESSERACT_VERSION = "7.0.0";
+const TESSERACT_URL = `https://cdn.jsdelivr.net/npm/tesseract.js@${TESSERACT_VERSION}/dist/tesseract.min.js`;
+const PDF_OCR_MAX_PAGES = 12;
+const PDF_OCR_RENDER_SCALE = 3;
+const PDF_OCR_MAX_DIMENSION = 4096;
 
 let remoteSaveChain = Promise.resolve();
 let remoteSyncWarned = false;
+let remoteSyncDisabled = false;
+let remoteSaveTimer = null;
+let pendingRemotePayload = null;
+let pendingRemoteResolvers = [];
 
 const DEFAULT_CATEGORIES = { income: [], expense: [] };
 
 const WEEK_DAYS = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
 
 const ACCOUNT_NEW_VALUE = "__new_account__";
+const UNCATEGORIZED_FILTER_VALUE = "__uncategorized__";
 const DEFAULT_ACCOUNTS = [];
 const CATEGORY_COLOR_PALETTE = [
   "#16a34a", "#22c55e", "#0f766e", "#14b8a6", "#3b82f6", "#2563eb",
@@ -135,6 +145,7 @@ const els = {
   categoryInput: document.getElementById("categoryInput"),
   accountInput: document.getElementById("accountInput"),
   customAccountInput: document.getElementById("customAccountInput"),
+  btnDeleteAccount: document.getElementById("btnDeleteAccount"),
   notesInput: document.getElementById("notesInput"),
   recurringInput: document.getElementById("recurringInput"),
   clearFormButton: document.getElementById("clearFormButton"),
@@ -153,6 +164,7 @@ const els = {
   importClose: document.getElementById("importClose"),
   toastContainer: document.getElementById("toastContainer"),
   confirmOverlay: document.getElementById("confirmOverlay"),
+  confirmIcon: document.getElementById("confirmIcon"),
   confirmTitle: document.getElementById("confirmTitle"),
   confirmText: document.getElementById("confirmText"),
   confirmCancel: document.getElementById("confirmCancel"),
@@ -173,6 +185,9 @@ const app = {
   pendingImport: null,
   pdfImportInProgress: false,
   importConfirming: false,
+  ocrScriptPromise: null,
+  toastQueue: [],
+  toastVisible: false,
   pendingConfirmAction: null,
   charts: {
     cashflow: null,
@@ -301,8 +316,9 @@ function categoriesForType(type) {
 }
 
 function categoryById(id) {
+  if (!id) return { id: "", label: "Sem categoria", color: "#64748b", icon: DEFAULT_CATEGORY_ICON };
   return allCategories().find((category) => category.id === id)
-    || { id: id || "categoria-removida", label: "Categoria removida", color: "#64748b", icon: DEFAULT_CATEGORY_ICON };
+    || { id: "categoria-removida", label: "Categoria removida", color: "#64748b", icon: DEFAULT_CATEGORY_ICON };
 }
 
 function categoryLabel(id) {
@@ -349,6 +365,7 @@ function seedState() {
     chartRange: "30d",
     categoryChartType: "expense",
     categories: cloneCategories(),
+    accounts: [],
     budgets: {},
     goals: [],
     transactions: []
@@ -376,6 +393,13 @@ function normalizeState(raw) {
     ? raw.selectedDate
     : fallback.selectedDate;
 
+  const transactions = Array.isArray(raw?.transactions)
+    ? raw.transactions.map((item) => normalizeTransaction(item, categories)).filter(Boolean)
+    : fallback.transactions;
+  const accounts = window.GatesAccountUtils
+    ? window.GatesAccountUtils.normalizeAccounts(raw?.accounts, transactions)
+    : [...new Set(transactions.map((item) => item.account).filter(Boolean))];
+
   return {
     selectedDate,
     period: ["month", "week", "all"].includes(raw?.period) ? raw.period : "month",
@@ -384,11 +408,10 @@ function normalizeState(raw) {
     chartRange: ["7d", "30d", "3m", "all"].includes(raw?.chartRange) ? raw.chartRange : fallback.chartRange,
     categoryChartType: ["expense", "income", "all"].includes(raw?.categoryChartType) ? raw.categoryChartType : fallback.categoryChartType,
     categories,
+    accounts,
     budgets: raw?.budgets && typeof raw.budgets === "object" ? raw.budgets : fallback.budgets,
     goals: Array.isArray(raw?.goals) ? raw.goals.map(normalizeGoal).filter(Boolean) : fallback.goals,
-    transactions: Array.isArray(raw?.transactions)
-      ? raw.transactions.map((item) => normalizeTransaction(item, categories)).filter(Boolean)
-      : fallback.transactions
+    transactions
   };
 }
 
@@ -436,7 +459,7 @@ function normalizeTransaction(item, groups = app?.state?.categories || DEFAULT_C
   const amount = Number(item?.amount);
   const date = /^\d{4}-\d{2}-\d{2}$/.test(item?.date || "") ? item.date : toISO(new Date());
   const description = String(item?.description || "").trim();
-  if (!description || !category || !Number.isFinite(amount) || amount <= 0) return null;
+  if (!description || !Number.isFinite(amount) || amount <= 0) return null;
 
   return {
     id: String(item.id || uid("transaction")),
@@ -482,15 +505,26 @@ function normalizeGoal(item) {
 
 async function loadData() {
   const persisted = loadPersistedState();
+  let remoteAvailable = false;
 
   try {
     const response = await fetch(DATA_API_URL, { cache: "no-store" });
     if (response.ok) {
       const payload = await response.json();
-      app.state = normalizeState(payload);
-      saveState({ sync: false });
-      saveDataSnapshot(dataSnapshot(payload));
-      return;
+      remoteAvailable = true;
+      if (payload && typeof payload === "object" && Object.keys(payload).length) {
+        app.state = normalizeState(payload);
+        await saveState({ sync: false });
+        saveDataSnapshot(dataSnapshot(payload));
+        return;
+      }
+    }
+    if (response.status === 503) {
+      remoteSyncDisabled = true;
+      if (!remoteSyncWarned) {
+        remoteSyncWarned = true;
+        showToast("Base de dados remota indisponível. As alterações ficarão neste dispositivo.");
+      }
     }
   } catch {
     // The API is optional during static development; continue with local data.
@@ -506,7 +540,7 @@ async function loadData() {
     if (!persisted || snapshot !== previousSnapshot) {
       app.state = normalizeState(payload);
       saveDataSnapshot(snapshot);
-      saveState({ sync: false });
+      await saveState({ sync: remoteAvailable });
       return;
     }
   } catch {
@@ -514,7 +548,7 @@ async function loadData() {
   }
 
   app.state = persisted || seedState();
-  if (!persisted) saveState({ sync: false });
+  await saveState({ sync: remoteAvailable });
 }
 
 function dataSnapshot(payload) {
@@ -553,18 +587,56 @@ function loadPersistedState() {
   }
 }
 
-function saveState({ sync = true } = {}) {
+function saveState({ sync = true, strict = false } = {}) {
   const payload = {
     version: 1,
     updatedAt: new Date().toISOString(),
     ...app.state
   };
   localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-  if (sync) queueRemoteSave(payload);
+  if (!sync) return Promise.resolve({ remote: false });
+  if (remoteSyncDisabled) {
+    return strict
+      ? Promise.reject(new Error("REMOTE_SYNC_UNAVAILABLE"))
+      : Promise.resolve({ remote: false });
+  }
+  return queueRemoteSave(payload, { strict });
 }
 
-function queueRemoteSave(payload) {
-  remoteSaveChain = remoteSaveChain
+function queueRemoteSave(payload, { strict = false } = {}) {
+  pendingRemotePayload = payload;
+  if (!strict) {
+    return new Promise((resolve) => {
+      pendingRemoteResolvers.push(resolve);
+      if (remoteSaveTimer) window.clearTimeout(remoteSaveTimer);
+      remoteSaveTimer = window.setTimeout(() => {
+        const latestPayload = pendingRemotePayload;
+        const resolvers = pendingRemoteResolvers;
+        pendingRemotePayload = null;
+        pendingRemoteResolvers = [];
+        remoteSaveTimer = null;
+        performRemoteSave(latestPayload).then((result) => {
+          resolvers.forEach((settle) => settle(result));
+        });
+      }, 450);
+    });
+  }
+
+  if (remoteSaveTimer) window.clearTimeout(remoteSaveTimer);
+  remoteSaveTimer = null;
+  pendingRemotePayload = null;
+  const resolvers = pendingRemoteResolvers;
+  pendingRemoteResolvers = [];
+  const operation = performRemoteSave(payload, { strict: true });
+  operation.then(
+    (result) => resolvers.forEach((settle) => settle(result)),
+    () => resolvers.forEach((settle) => settle({ remote: false }))
+  );
+  return operation;
+}
+
+function performRemoteSave(payload, { strict = false } = {}) {
+  const operation = remoteSaveChain
     .catch(() => undefined)
     .then(async () => {
       const response = await fetch(DATA_API_URL, {
@@ -572,15 +644,23 @@ function queueRemoteSave(payload) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    })
-    .catch(() => {
-      if (!remoteSyncWarned && window.location.protocol !== "file:") {
-        remoteSyncWarned = true;
-        showToast("Alteração salva neste dispositivo; API de dados indisponível.");
+      if (!response.ok) {
+        const error = new Error(`HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
       }
+      remoteSyncWarned = false;
+      return { remote: true };
     });
-  return remoteSaveChain;
+  remoteSaveChain = operation.catch((error) => {
+    if (error?.status === 503) remoteSyncDisabled = true;
+    if (!strict && !remoteSyncWarned && window.location.protocol !== "file:") {
+      remoteSyncWarned = true;
+      showToast("Alteração salva neste dispositivo; a sincronização será tentada novamente.");
+    }
+    return { remote: false };
+  });
+  return strict ? operation : remoteSaveChain;
 }
 
 function exportPayload() {
@@ -594,6 +674,7 @@ function exportPayload() {
     chartRange: app.state.chartRange,
     categoryChartType: app.state.categoryChartType,
     categories: app.state.categories,
+    accounts: [...app.state.accounts],
     budgets: app.state.budgets,
     goals: [...app.state.goals],
     transactions: [...app.state.transactions].sort(sortTransactions)
@@ -636,11 +717,17 @@ function allPeriodTransactions() {
     .sort(sortTransactions);
 }
 
+function matchesCategoryFilter(item) {
+  if (app.filters.category === "all") return true;
+  if (app.filters.category === UNCATEGORIZED_FILTER_VALUE) return !item.category;
+  return item.category === app.filters.category;
+}
+
 function visibleTransactions() {
   const search = app.filters.search.toLowerCase();
   return allPeriodTransactions().filter((item) => {
     if (app.filters.type !== "all" && item.type !== app.filters.type) return false;
-    if (app.filters.category !== "all" && item.category !== app.filters.category) return false;
+    if (!matchesCategoryFilter(item)) return false;
     if (app.filters.account !== "all" && item.account !== app.filters.account) return false;
     if (!search) return true;
     const haystack = [
@@ -702,10 +789,13 @@ function totalsByCategory(items, type = "expense") {
 }
 
 function uniqueAccounts() {
-  return [...new Set([
-    ...DEFAULT_ACCOUNTS,
-    ...app.state.transactions.map((item) => item.account).filter(Boolean)
-  ])]
+  if (window.GatesAccountUtils) {
+    return window.GatesAccountUtils.normalizeAccounts(
+      [...DEFAULT_ACCOUNTS, ...(app.state.accounts || [])],
+      app.state.transactions
+    );
+  }
+  return [...new Set([...(app.state.accounts || []), ...app.state.transactions.map((item) => item.account).filter(Boolean)])]
     .sort((a, b) => a.localeCompare(b, "pt-BR"));
 }
 
@@ -727,19 +817,70 @@ function fillAccountInput(selectedAccount = els.accountInput?.value || "") {
     ? ACCOUNT_NEW_VALUE
     : (cleanSelected && optionAccounts.includes(cleanSelected) ? cleanSelected : "");
   updateAccountInputState();
+  syncCustomFormControls();
 }
 
 function updateAccountInputState() {
   if (!els.accountInput || !els.customAccountInput) return;
   const creating = els.accountInput.value === ACCOUNT_NEW_VALUE;
+  const selectedAccount = els.accountInput.value.trim();
   els.customAccountInput.classList.toggle("hidden", !creating);
   els.customAccountInput.required = creating;
+  els.btnDeleteAccount?.classList.toggle("hidden", !selectedAccount || creating);
   if (!creating) els.customAccountInput.value = "";
 }
 
 function currentAccountValue() {
   if (els.accountInput.value === ACCOUNT_NEW_VALUE) return els.customAccountInput.value.trim();
   return els.accountInput.value.trim();
+}
+
+function registerAccount(account) {
+  const label = String(account || "").trim();
+  if (!label) return;
+  app.state.accounts = window.GatesAccountUtils
+    ? window.GatesAccountUtils.registerAccount(app.state.accounts, label)
+    : [...new Set([...(app.state.accounts || []), label])];
+}
+
+function confirmDeleteAccount() {
+  const account = currentAccountValue();
+  if (!account || account === ACCOUNT_NEW_VALUE) return;
+  const key = window.GatesAccountUtils?.identity(account) || String(account).toLowerCase();
+  const usageCount = app.state.transactions.filter((item) => (
+    (window.GatesAccountUtils?.identity(item.account) || String(item.account || "").toLowerCase()) === key
+  )).length;
+  const impact = usageCount
+    ? `${usageCount} ${usageCount === 1 ? "lançamento vinculado ficará" : "lançamentos vinculados ficarão"} sem conta.`
+    : "Essa ação não pode ser desfeita.";
+  openConfirmDialog({
+    title: "Excluir conta?",
+    message: `Excluir "${account}"? ${impact}`,
+    action: () => deleteAccount(account)
+  });
+}
+
+function deleteAccount(account) {
+  if (!window.GatesAccountUtils) {
+    showToast("Não foi possível gerenciar as contas. Recarregue a página.");
+    return;
+  }
+  const result = window.GatesAccountUtils.removeAccount(
+    app.state.accounts,
+    app.state.transactions,
+    account
+  );
+  if (!result.removed) return;
+  app.state.accounts = result.accounts;
+  app.state.transactions = result.transactions;
+  if ((window.GatesAccountUtils?.identity(app.filters.account) || String(app.filters.account || "").toLowerCase())
+    === (window.GatesAccountUtils?.identity(account) || String(account).toLowerCase())) {
+    app.filters.account = "all";
+  }
+  fillAccountInput("");
+  saveState();
+  renderAll();
+  showToast("Conta excluída.");
 }
 
 const customFormControls = [];
@@ -749,7 +890,9 @@ function emitNativeChange(field) {
 }
 
 function controlLabel(field) {
+  const labelledBy = field.getAttribute("aria-labelledby");
   return field.getAttribute("aria-label")
+    || (labelledBy ? document.getElementById(labelledBy)?.textContent?.trim() : "")
     || field.closest("label")?.querySelector("span")?.textContent?.trim()
     || "Selecionar";
 }
@@ -1199,12 +1342,13 @@ function fillFilters() {
     ? allCategories()
     : categoriesForType(app.filters.type).filter((category) => activeIds.has(category.id));
 
-  const currentCategoryStillValid = app.filters.category === "all"
+  const currentCategoryStillValid = ["all", UNCATEGORIZED_FILTER_VALUE].includes(app.filters.category)
     || categories.some((category) => category.id === app.filters.category);
   if (!currentCategoryStillValid) app.filters.category = "all";
 
   els.filterCategory.innerHTML = [
     '<option value="all">Categorias</option>',
+    `<option value="${UNCATEGORIZED_FILTER_VALUE}">Sem categoria</option>`,
     ...categories.map((category) => `<option value="${category.id}">${escapeHTML(category.label)}</option>`)
   ].join("");
   els.filterCategory.value = app.filters.category;
@@ -1222,11 +1366,12 @@ function fillCategoryInputs() {
   const transactionCategories = categoriesForType(app.currentType).filter((category) => activeIds.has(category.id));
   const budgetCategories = categoriesForType("expense").filter((category) => activeIds.has(category.id));
 
-  els.categoryInput.innerHTML = transactionCategories
-    .map((category) => `<option value="${category.id}">${escapeHTML(category.label)}</option>`)
-    .join("");
+  els.categoryInput.innerHTML = [
+    '<option value="">Sem categoria</option>',
+    ...transactionCategories.map((category) => `<option value="${category.id}">${escapeHTML(category.label)}</option>`)
+  ].join("");
   if (!transactionCategories.some((category) => category.id === els.categoryInput.value)) {
-    els.categoryInput.value = transactionCategories[0]?.id || "";
+    els.categoryInput.value = "";
   }
 
   els.budgetCategoryInput.innerHTML = budgetCategories
@@ -1384,7 +1529,7 @@ function cashflowTransactions() {
     .filter((item) => isInRange(item.date, range))
     .filter((item) => {
       if (app.filters.type !== "all" && item.type !== app.filters.type) return false;
-      if (app.filters.category !== "all" && item.category !== app.filters.category) return false;
+      if (!matchesCategoryFilter(item)) return false;
       if (app.filters.account !== "all" && item.account !== app.filters.account) return false;
       if (!search) return true;
       const haystack = [
@@ -2201,6 +2346,29 @@ function resetCategoryForm() {
   renderCategoryIconPicker();
   renderCategoryColorPicker();
   closeCategoryColorPopover();
+  syncCustomFormControls();
+}
+
+function applyCategoryUpdate({ id, label, type, color, icon, currentType }) {
+  const current = categoryById(id);
+  const affectedCount = app.state.transactions.filter((transaction) => transaction.category === id).length;
+  const updated = { ...current, label, color, icon, type };
+  app.state.categories[currentType] = app.state.categories[currentType]
+    .filter((category) => category.id !== id);
+  app.state.categories[type].push(updated);
+  if (type !== currentType) {
+    app.state.transactions = app.state.transactions.map((transaction) => (
+      transaction.category === id ? { ...transaction, type } : transaction
+    ));
+    if (currentType === "expense") delete app.state.budgets[id];
+  }
+  saveState();
+  resetCategoryForm();
+  renderAll();
+  const migrated = type !== currentType && affectedCount
+    ? ` ${affectedCount} ${affectedCount === 1 ? "lançamento também foi atualizado" : "lançamentos também foram atualizados"}.`
+    : "";
+  showToast(`Categoria atualizada.${migrated}`);
 }
 
 function submitCategory(event) {
@@ -2226,12 +2394,34 @@ function submitCategory(event) {
   if (app.editingCategoryId) {
     const current = categoryById(app.editingCategoryId);
     const currentType = current.type || findCategoryType(current.id);
-    app.state.categories[currentType] = app.state.categories[currentType].map((category) => (
-      category.id === app.editingCategoryId
-        ? { ...category, label, color, icon, type: currentType }
-        : category
-    ));
-    showToast("Categoria atualizada.");
+    const update = () => applyCategoryUpdate({
+      id: app.editingCategoryId,
+      label,
+      type,
+      color,
+      icon,
+      currentType
+    });
+    if (type !== currentType) {
+      const affectedCount = app.state.transactions.filter((transaction) => transaction.category === app.editingCategoryId).length;
+      const transactionImpact = affectedCount
+        ? `${affectedCount} ${affectedCount === 1 ? "lançamento vinculado também mudará" : "lançamentos vinculados também mudarão"} para ${type === "income" ? "Entrada" : "Saída"}.`
+        : "Nenhum lançamento existente será alterado.";
+      const budgetImpact = currentType === "expense" && app.state.budgets[app.editingCategoryId]
+        ? " O limite mensal desta categoria será removido."
+        : "";
+      openConfirmDialog({
+        title: "Alterar tipo da categoria?",
+        message: `Alterar "${current.label}" para ${type === "income" ? "Entrada" : "Saída"}? ${transactionImpact}${budgetImpact}`,
+        confirmLabel: "Alterar tipo",
+        tone: "neutral",
+        icon: "repeat-2",
+        action: update
+      });
+      return;
+    }
+    update();
+    return;
   } else {
     const idBase = slugify(label) || "categoria";
     const id = uniqueCategoryId(idBase);
@@ -2252,24 +2442,37 @@ function editCategory(id) {
   els.categoryIdInput.value = id;
   els.categoryNameInput.value = category.label;
   els.categoryTypeInput.value = type;
-  els.categoryTypeInput.disabled = true;
+  els.categoryTypeInput.disabled = false;
   els.categoryColorInput.value = category.color;
   els.categoryIconInput.value = normalizeIconName(category.icon);
   els.categorySubmitButton.textContent = "Salvar alteração";
   els.categoryCancelButton.classList.remove("hidden");
   renderCategoryIconPicker();
   renderCategoryColorPicker();
+  syncCustomFormControls();
   els.categoryNameInput.focus();
 }
 
-function openConfirmDialog({ title = "Confirmar exclusão?", message = "Essa ação não pode ser desfeita.", action }) {
+function openConfirmDialog({
+  title = "Confirmar exclusão?",
+  message = "Essa ação não pode ser desfeita.",
+  confirmLabel = "Excluir",
+  tone = "danger",
+  icon = "trash-2",
+  action
+}) {
   app.pendingConfirmAction = typeof action === "function" ? action : null;
   els.confirmTitle.textContent = title;
   els.confirmText.textContent = message;
+  els.confirmDelete.textContent = confirmLabel;
+  els.confirmDelete.className = tone === "danger" ? "btn-danger" : "btn-primary";
+  els.confirmOverlay.dataset.tone = tone;
+  els.confirmIcon.innerHTML = lucideIcon(icon);
   els.confirmOverlay.classList.remove("hidden");
   els.confirmOverlay.setAttribute("aria-hidden", "false");
   closeCustomFormControls();
   closeCategoryColorPopover();
+  refreshLucideIcons();
   requestAnimationFrame(() => els.confirmCancel.focus());
 }
 
@@ -2338,6 +2541,7 @@ function setCurrentType(type) {
     button.classList.toggle("active", button.dataset.type === app.currentType);
   });
   fillCategoryInputs();
+  syncCustomFormControls();
 }
 
 function resetTransactionForm() {
@@ -2374,9 +2578,11 @@ function submitTransaction(event) {
   });
 
   if (!payload) {
-    showToast("Preencha descrição, valor, data e categoria.");
+    showToast("Preencha descrição, valor e data.");
     return;
   }
+
+  registerAccount(accountValue);
 
   if (app.editingTransactionId) {
     app.state.transactions = app.state.transactions.map((item) => item.id === payload.id ? payload : item);
@@ -2650,11 +2856,26 @@ function changePeriod(amount) {
 }
 
 function showToast(message) {
+  const text = String(message || "").trim();
+  if (!text) return;
+  const visibleText = els.toastContainer.firstElementChild?.textContent;
+  if (visibleText === text || app.toastQueue.at(-1) === text) return;
+  app.toastQueue.push(text);
+  showNextToast();
+}
+
+function showNextToast() {
+  if (app.toastVisible || !app.toastQueue.length) return;
+  app.toastVisible = true;
   const toast = document.createElement("div");
   toast.className = "toast";
-  toast.textContent = message;
+  toast.textContent = app.toastQueue.shift();
   els.toastContainer.appendChild(toast);
-  window.setTimeout(() => toast.remove(), 2800);
+  window.setTimeout(() => {
+    toast.remove();
+    app.toastVisible = false;
+    showNextToast();
+  }, 2800);
 }
 
 function openSidebar() {
@@ -2906,6 +3127,106 @@ function transactionFingerprint(item) {
   return window.GatesPdfParser.transactionFingerprint(item);
 }
 
+function updateImportLoading(message) {
+  const loading = els.importBody.querySelector(".import-loading");
+  if (loading) loading.textContent = message;
+}
+
+function loadOcrLibrary() {
+  if (window.Tesseract?.createWorker) return Promise.resolve(window.Tesseract);
+  if (app.ocrScriptPromise) return app.ocrScriptPromise;
+
+  app.ocrScriptPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = TESSERACT_URL;
+    script.async = true;
+    script.onload = () => window.Tesseract?.createWorker
+      ? resolve(window.Tesseract)
+      : reject(new Error("PDF_OCR_UNAVAILABLE"));
+    script.onerror = () => reject(new Error("PDF_OCR_UNAVAILABLE"));
+    document.head.appendChild(script);
+  }).catch((error) => {
+    app.ocrScriptPromise = null;
+    throw error;
+  });
+
+  return app.ocrScriptPromise;
+}
+
+function ocrRowsFromResult(data, pageNumber, pageHeight) {
+  const rows = [];
+  for (const block of data?.blocks || []) {
+    for (const paragraph of block.paragraphs || []) {
+      for (const line of paragraph.lines || []) {
+        const items = (line.words || []).map((word) => ({
+          text: String(word.text || "").trim(),
+          x: Number(word.bbox?.x0 || 0),
+          y: Number(pageHeight - Number(word.bbox?.y0 || 0)),
+          width: Math.max(0, Number(word.bbox?.x1 || 0) - Number(word.bbox?.x0 || 0)),
+          fontSize: Math.max(1, Number(word.bbox?.y1 || 0) - Number(word.bbox?.y0 || 0))
+        })).filter((item) => item.text);
+        const text = items.map((item) => item.text).join(" ").trim();
+        if (!text) continue;
+        rows.push({
+          page: pageNumber,
+          text,
+          items,
+          y: pageHeight - Number(line.bbox?.y0 || 0),
+          source: "ocr"
+        });
+      }
+    }
+  }
+
+  if (rows.length) return rows;
+  return String(data?.text || "")
+    .split(/\r?\n/)
+    .map((text) => text.trim())
+    .filter(Boolean)
+    .map((text, index) => ({ page: pageNumber, text, items: [], y: pageHeight - index, source: "ocr" }));
+}
+
+async function extractOcrRows(pdf) {
+  if (pdf.numPages > PDF_OCR_MAX_PAGES) throw new Error("PDF_TOO_LARGE");
+  const tesseract = await loadOcrLibrary();
+  const worker = await tesseract.createWorker(
+    "por+eng",
+    tesseract.OEM?.LSTM_ONLY ?? 1,
+    {
+      logger: (event) => {
+        if (event.status !== "recognizing text") return;
+        const percent = Math.round(Number(event.progress || 0) * 100);
+        updateImportLoading(`Reconhecendo os lançamentos... ${percent}%`);
+      }
+    }
+  );
+  const rows = [];
+
+  try {
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      updateImportLoading(`Reconhecendo página ${pageNumber} de ${pdf.numPages}...`);
+      const page = await pdf.getPage(pageNumber);
+      const baseViewport = page.getViewport({ scale: PDF_OCR_RENDER_SCALE });
+      const scaleFactor = Math.min(1, PDF_OCR_MAX_DIMENSION / Math.max(baseViewport.width, baseViewport.height));
+      const viewport = page.getViewport({ scale: PDF_OCR_RENDER_SCALE * scaleFactor });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      const context = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
+      await page.render({ canvasContext: context, viewport }).promise;
+      const result = await worker.recognize(canvas, {}, { blocks: true });
+      rows.push(...ocrRowsFromResult(result.data, pageNumber, canvas.height));
+      canvas.width = 0;
+      canvas.height = 0;
+      page.cleanup();
+    }
+  } finally {
+    await worker.terminate();
+  }
+
+  return rows;
+}
+
 async function extractPdfTransactions(file) {
   if (!window.GatesPdfParser) throw new Error("PDF_PROCESSING_FAILED");
   if (!window.pdfjsLib?.getDocument) throw new Error("PDF_LIBRARY_UNAVAILABLE");
@@ -2930,7 +3251,11 @@ async function extractPdfTransactions(file) {
       page.cleanup();
     }
 
-    if (!textItemCount) throw new Error("PDF_EMPTY_TEXT");
+    if (!textItemCount) {
+      updateImportLoading("O documento não possui texto. Iniciando leitura visual...");
+      rows.push(...await extractOcrRows(pdf));
+    }
+    if (!rows.length) throw new Error("PDF_EMPTY_TEXT");
     const parsed = window.GatesPdfParser.parseDocumentRows(
       rows,
       file.name,
@@ -2941,7 +3266,7 @@ async function extractPdfTransactions(file) {
     return parsed.transactions.map((item) => ({ ...item, id: item.id || uid("transaction") }));
   } catch (error) {
     if ([
-      "PDF_LIBRARY_UNAVAILABLE", "PDF_INVALID", "PDF_PASSWORD_PROTECTED", "PDF_TOO_LARGE",
+      "PDF_LIBRARY_UNAVAILABLE", "PDF_OCR_UNAVAILABLE", "PDF_INVALID", "PDF_PASSWORD_PROTECTED", "PDF_TOO_LARGE",
       "PDF_EMPTY_TEXT", "PDF_NO_TRANSACTIONS", "PDF_PROCESSING_FAILED"
     ].includes(error?.message)) throw error;
     if (error?.name === "PasswordException" || error?.code === 1 || error?.code === 2) {
@@ -2964,6 +3289,7 @@ async function extractPdfTransactions(file) {
 function pdfImportErrorMessage(code) {
   return {
     PDF_LIBRARY_UNAVAILABLE: "O leitor de PDF não foi carregado.",
+    PDF_OCR_UNAVAILABLE: "O leitor visual do PDF não pôde ser carregado.",
     PDF_INVALID: "Este arquivo não é um PDF válido.",
     PDF_PASSWORD_PROTECTED: "Este PDF está protegido por senha.",
     PDF_TOO_LARGE: "O arquivo excede o tamanho permitido.",
@@ -3022,21 +3348,31 @@ async function preparePdfImport(file) {
   }
 }
 
-function confirmPreparedImport() {
+async function confirmPreparedImport() {
   if (!app.pendingImport || app.importConfirming) return;
   if (app.pendingImport.type === "json") {
     app.importConfirming = true;
-    app.state = app.pendingImport.state;
-    app.currentView = app.state.currentView;
-    app.chartRange = app.state.chartRange;
-    app.categoryChartType = app.state.categoryChartType;
-    saveState();
-    resetTransactionForm();
-    resetGoalForm();
-    renderAll();
-    closeImportModal();
-    showToast("Backup JSON restaurado.");
-    app.importConfirming = false;
+    els.importConfirm.disabled = true;
+    const previousState = app.state;
+    try {
+      app.state = app.pendingImport.state;
+      await saveState({ strict: window.location.protocol !== "file:" });
+      app.currentView = app.state.currentView;
+      app.chartRange = app.state.chartRange;
+      app.categoryChartType = app.state.categoryChartType;
+      resetTransactionForm();
+      resetGoalForm();
+      renderAll();
+      closeImportModal();
+      showToast("Backup JSON restaurado.");
+    } catch {
+      app.state = previousState;
+      await saveState({ sync: false });
+      els.importConfirm.disabled = false;
+      showToast("Não foi possível salvar o backup na base de dados.");
+    } finally {
+      app.importConfirming = false;
+    }
     return;
   }
 
@@ -3059,12 +3395,16 @@ function confirmPreparedImport() {
       const type = row.querySelector("select").value;
       const description = row.querySelector('.import-preview-copy input').value.trim();
       if (!description) return null;
-      const category = window.GatesPdfParser.resolveCategory(
-        stagedCategories,
-        type,
-        description,
-        true
-      );
+      const preferredCategory = stagedCategories[type].find((category) => (
+        window.GatesPdfParser.comparable(category.label) === window.GatesPdfParser.comparable(source.categoryLabel)
+        || window.GatesPdfParser.comparable(category.id) === window.GatesPdfParser.comparable(source.categoryLabel)
+      ));
+      const category = preferredCategory?.id || window.GatesPdfParser.resolveCategory(
+          stagedCategories,
+          type,
+          description,
+          true
+        );
       return normalizeTransaction({
         ...source,
         type,
@@ -3078,14 +3418,26 @@ function confirmPreparedImport() {
       els.importConfirm.disabled = false;
       return;
     }
-    app.state.categories = stagedCategories;
-    app.state.transactions.push(...selectedItems);
-    saveState();
+    const previousState = app.state;
+    const stagedAccounts = window.GatesAccountUtils.normalizeAccounts(app.state.accounts, selectedItems);
+    app.state = {
+      ...app.state,
+      categories: stagedCategories,
+      accounts: stagedAccounts,
+      transactions: [...app.state.transactions, ...selectedItems]
+    };
+    try {
+      await saveState({ strict: window.location.protocol !== "file:" });
+    } catch (error) {
+      app.state = previousState;
+      await saveState({ sync: false });
+      throw error;
+    }
     renderAll();
     closeImportModal();
     showToast(`${selectedItems.length} ${selectedItems.length === 1 ? "lançamento importado" : "lançamentos importados"}.`);
   } catch {
-    showToast("Não foi possível concluir a importação.");
+    showToast("Não foi possível salvar os lançamentos na base de dados.");
     els.importConfirm.disabled = false;
   } finally {
     app.importConfirming = false;
@@ -3191,6 +3543,7 @@ function bindEvents() {
     updateAccountInputState();
     if (els.accountInput.value === ACCOUNT_NEW_VALUE) els.customAccountInput.focus();
   });
+  els.btnDeleteAccount.addEventListener("click", confirmDeleteAccount);
   els.clearFormButton.addEventListener("click", closeTransactionDrawer);
   els.transactionDrawerOverlay.addEventListener("click", closeTransactionDrawer);
   els.btnDeleteTransaction.addEventListener("click", () => {
