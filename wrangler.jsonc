@@ -2,11 +2,5 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "gates",
   "compatibility_date": "2026-07-11",
-  "pages_build_output_dir": "./",
-  "kv_namespaces": [
-    {
-      "binding": "FINANCE_DATA",
-      "id": "a7557ff776bf46bea32bb89dd0acf2c3"
-    }
-  ]
+  "pages_build_output_dir": "./"
 }

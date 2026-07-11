@@ -23,7 +23,10 @@
   const SUMMARY_PHRASES = [
     "TOTAL DA FATURA", "TOTAL DE COMPRAS", "SALDO ANTERIOR", "SALDO ATUAL",
     "SALDO DISPONIVEL", "LIMITE TOTAL", "LIMITE DISPONIVEL", "PAGAMENTO MINIMO",
-    "VALOR TOTAL", "MELHOR DIA DE COMPRA", "ENCARGOS PREVISTOS", "RESUMO DA FATURA"
+    "VALOR TOTAL", "MELHOR DIA DE COMPRA", "ENCARGOS PREVISTOS", "RESUMO DA FATURA",
+    "TOTAL FATURA", "TOTAL GERAL", "SUBTOTAL", "VALOR DA FATURA", "VALOR A PAGAR",
+    "NEW BALANCE", "PREVIOUS BALANCE", "STATEMENT BALANCE", "AVAILABLE BALANCE",
+    "CREDIT LIMIT", "AVAILABLE CREDIT", "MINIMUM PAYMENT", "AMOUNT DUE", "TOTAL PURCHASES"
   ];
 
   const CATEGORY_RULES = [
@@ -53,31 +56,50 @@
     return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
   }
 
+  function datePartsFromMatch(match, numeric) {
+    if (!match) return null;
+    const monthToken = numeric ? Number(match[2]) : MONTHS[match[2]];
+    if (!monthToken) return null;
+    return {
+      day: Number(match[1]),
+      month: monthToken,
+      year: match[3] ? Number(match[3]) : null,
+      numeric,
+      index: Number(match.index || 0),
+      length: match[0].length,
+      raw: match[0]
+    };
+  }
+
   function datePartsAtStart(line) {
     const normalized = comparable(line);
     const weekday = "(?:(?:SEG|TER|QUA|QUI|SEX|SAB|DOM)\\.?[,]?\\s+)?";
     const numeric = normalized.match(new RegExp(`^\\s*${weekday}(\\d{1,2})\\s*[\\/.\\-]\\s*(\\d{1,2})(?:\\s*[\\/.\\-]\\s*(\\d{2,4}))?\\b`));
-    if (numeric) {
-      return {
-        day: Number(numeric[1]),
-        month: Number(numeric[2]),
-        year: numeric[3] ? Number(numeric[3]) : null,
-        numeric: true,
-        length: numeric[0].length,
-        raw: numeric[0]
-      };
-    }
+    if (numeric) return datePartsFromMatch(numeric, true);
 
     const textual = normalized.match(new RegExp(`^\\s*${weekday}(\\d{1,2})\\s+(?:DE\\s+)?([A-Z]{3,10})\\.?(?:\\s+(?:DE\\s+)?(\\d{4}))?\\b`));
-    if (!textual || !MONTHS[textual[2]]) return null;
-    return {
-      day: Number(textual[1]),
-      month: MONTHS[textual[2]],
-      year: textual[3] ? Number(textual[3]) : null,
-      numeric: false,
-      length: textual[0].length,
-      raw: textual[0]
-    };
+    return datePartsFromMatch(textual, false);
+  }
+
+  function datePartsInTransaction(line) {
+    const atStart = datePartsAtStart(line);
+    if (atStart) return atStart;
+
+    const normalized = comparable(line);
+    const numericPattern = /(\d{1,2})\s*[\/.\-]\s*(\d{1,2})(?:\s*[\/.\-]\s*(\d{2,4}))\b/g;
+    const textualPattern = /(\d{1,2})\s+(?:DE\s+)?([A-Z]{3,10})\.?(?:\s+(?:DE\s+)?(\d{4}))\b/g;
+    const candidates = [
+      ...[...normalized.matchAll(numericPattern)].map((match) => datePartsFromMatch(match, true)),
+      ...[...normalized.matchAll(textualPattern)].map((match) => datePartsFromMatch(match, false))
+    ].filter(Boolean).sort((a, b) => a.index - b.index);
+    if (candidates.length) return candidates[0];
+
+    const prefixed = normalized.match(/^(?:CARTAO|CARD|FINAL|FIM|TERMINAL)?\s*[*X#-]*\d{2,8}\s+(\d{1,2})\s*[\/.\-]\s*(\d{1,2})\b/);
+    if (!prefixed) return null;
+    const dateStart = prefixed[0].lastIndexOf(prefixed[1]);
+    prefixed.index = dateStart;
+    prefixed[0] = prefixed[0].slice(dateStart);
+    return datePartsFromMatch(prefixed, true);
   }
 
   function parseIso(value) {
@@ -125,16 +147,20 @@
     return isoDate(year, month, day);
   }
 
-  function explicitDateFromText(value) {
+  function explicitDateFromText(value, context = {}) {
     const normalized = comparable(value).trim();
     const parts = datePartsAtStart(normalized);
     if (!parts || parts.year === null) return "";
-    return parseStatementDate(parts);
+    return parseStatementDate(parts, context);
   }
 
   function detectDocumentContext(allText, options = {}) {
     const text = comparable(allText);
-    const invoiceScore = ["FATURA", "PAGAMENTO MINIMO", "LIMITE", "MELHOR DIA DE COMPRA"]
+    const invoiceScore = [
+      "FATURA", "PAGAMENTO MINIMO", "LIMITE", "MELHOR DIA DE COMPRA", "CARTAO DE CREDITO",
+      "VALOR DA FATURA", "DATA DE FECHAMENTO", "STATEMENT BALANCE", "MINIMUM PAYMENT",
+      "CREDIT CARD", "CARD STATEMENT", "PAYMENT DUE"
+    ]
       .filter((term) => text.includes(term)).length;
     const statementScore = [
       "EXTRATO", "CONTA CORRENTE", "AGENCIA", "PIX", "TED", "TRANSFERENCIA",
@@ -147,17 +173,17 @@
       : statementScore >= 2 || text.includes("EXTRATO BANCARIO") || text.includes("STATEMENT OF ACCOUNT")
         ? "bank_statement"
         : "unknown";
-    const dateOrder = /\b(?:STATEMENT OF ACCOUNT|ACCOUNT TRANSACTIONS|DEPOSITS AND OTHER CREDITS)\b/.test(text)
+    const dateOrder = /\b(?:STATEMENT OF ACCOUNT|ACCOUNT TRANSACTIONS|DEPOSITS AND OTHER CREDITS|CARD STATEMENT|PAYMENT DUE|DUE DATE)\b/.test(text)
       ? "mdy"
       : "dmy";
 
     let periodStart = "";
     let periodEnd = "";
-    const rangePattern = /(\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4})\s*(?:A|ATE|-)\s*(\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4})/g;
+    const rangePattern = /(\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4})\s*(?:A|ATE|TO|THROUGH|-)\s*(\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4})/g;
     const range = rangePattern.exec(text);
     if (range) {
-      periodStart = explicitDateFromText(range[1]);
-      periodEnd = explicitDateFromText(range[2]);
+      periodStart = explicitDateFromText(range[1], { dateOrder });
+      periodEnd = explicitDateFromText(range[2], { dateOrder });
     }
 
     let referenceYear = null;
@@ -174,13 +200,20 @@
       referenceYear = Number(numericReference[2]);
     }
 
-    const labeledDatePattern = /(?:VENCIMENTO|FECHAMENTO|EMISSAO|DATA DA FATURA)\D{0,20}(\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4})/g;
-    const labeledTextDatePattern = /(?:VENCIMENTO|FECHAMENTO|EMISSAO|DATA DA FATURA)\D{0,20}(\d{1,2}\s+(?:DE\s+)?[A-Z]{3,10}(?:\s+(?:DE\s+)?20\d{2}))/g;
+    const genericMonthReference = text.match(new RegExp(`\\b(${Object.keys(MONTHS).join("|")})\\b\\s*(?:DE\\s+)?[\\/\\-]?\\s*(20\\d{2})\\b`));
+    if (!referenceYear && genericMonthReference && MONTHS[genericMonthReference[1]]) {
+      referenceMonth = MONTHS[genericMonthReference[1]];
+      referenceYear = Number(genericMonthReference[2]);
+    }
+
+    const dateLabel = "(?:VENCIMENTO|FECHAMENTO|EMISSAO|DATA DA FATURA|DATA DE CORTE|DUE DATE|CLOSING DATE|STATEMENT DATE|ISSUE DATE)";
+    const labeledDatePattern = new RegExp(`${dateLabel}\\D{0,20}(\\d{1,2}[\\/.\\-]\\d{1,2}[\\/.\\-]\\d{2,4})`, "g");
+    const labeledTextDatePattern = new RegExp(`${dateLabel}\\D{0,20}(\\d{1,2}\\s+(?:DE\\s+)?[A-Z]{3,10}(?:\\s+(?:DE\\s+)?20\\d{2}))`, "g");
     const labeledDates = [
       ...[...text.matchAll(labeledDatePattern)].map((match) => match[1]),
       ...[...text.matchAll(labeledTextDatePattern)].map((match) => match[1])
     ]
-      .map((value) => explicitDateFromText(value))
+      .map((value) => explicitDateFromText(value, { dateOrder }))
       .filter(Boolean);
     if (labeledDates.length) {
       const parts = parseIso(labeledDates[0]);
@@ -215,25 +248,26 @@
     const compact = String(value || "").replace(/\s/g, "").replace(/^[+-]/, "");
     const lastComma = compact.lastIndexOf(",");
     const lastDot = compact.lastIndexOf(".");
+    if (lastComma < 0 && lastDot < 0) return Number(compact);
     const decimalSeparator = lastComma > lastDot ? "," : ".";
     const thousandsSeparator = decimalSeparator === "," ? /\./g : /,/g;
     return Number(compact.replace(thousandsSeparator, "").replace(decimalSeparator, "."));
   }
 
   function parseMoneyAtEnd(line, context = {}) {
-    const pattern = /(?<![\/\d])([+-])?\s*(?:(?:R\$|\$)\s*)?([+-]?\s*(?:(?:\d{1,3}(?:\.\d{3})+|\d{1,3}(?:\s\d{3})+|\d+),\d{2}|(?:\d{1,3}(?:,\d{3})+|\d{1,3}(?:\s\d{3})+|\d+)\.\d{2}))\s*([+-])?\s*([DC])?(?![\d./-])/gi;
+    const pattern = /(?<![\/\d])(\()?\s*([+-])?\s*(?:(?:R\$|US\$|BRL|USD|EUR|€|\$)\s*)?([+-])?\s*((?:(?:\d{1,3}(?:\.\d{3})+|\d{1,3}(?:\s\d{3})+|\d+),\d{2}|(?:\d{1,3}(?:,\d{3})+|\d{1,3}(?:\s\d{3})+|\d+)\.\d{2}|[.,]\d{2}))\s*([+-])?\s*(CR|DR|C|D)?\s*(\))?(?![\d./-])/gi;
     const matches = [...String(line || "").matchAll(pattern)];
     if (!matches.length) return null;
     const match = context.documentType === "bank_statement" && matches.length > 1
       ? matches[0]
       : matches[matches.length - 1];
-    const amount = parseMoneyNumber(match[2]);
+    const amount = parseMoneyNumber(match[4]);
     if (!Number.isFinite(amount) || amount <= 0) return null;
-    const inlineSign = match[2].trim().startsWith("-") ? "-" : match[2].trim().startsWith("+") ? "+" : "";
+    const indicator = String(match[6] || "").toUpperCase();
     return {
       amount,
-      indicator: String(match[4] || "").toUpperCase(),
-      sign: match[3] || match[1] || inlineSign,
+      indicator: indicator === "CR" ? "C" : indicator === "DR" ? "D" : indicator,
+      sign: match[5] || match[3] || match[2] || (match[1] && match[7] ? "-" : ""),
       index: match.index,
       raw: match[0]
     };
@@ -243,6 +277,7 @@
     const normalized = comparable(line);
     if (SUMMARY_PHRASES.some((phrase) => normalized.includes(phrase))) return true;
     if (context.documentType === "credit_card_invoice" && /\bPAGAMENTO (?:DA )?FATURA\b/.test(normalized)) return true;
+    if (context.documentType === "credit_card_invoice" && /\b(?:PAYMENT RECEIVED|PAYMENT THANK YOU|AUTOMATIC PAYMENT)\b/.test(normalized)) return true;
     if (/\bVENCIMENTO\b/.test(normalized) && !/\b(?:TARIFA|JUROS|MULTA)\b/.test(normalized)) return true;
     return false;
   }
@@ -251,11 +286,14 @@
     const normalized = comparable(description);
     const creditWords = [
       "PIX RECEBIDO", "TRANSFERENCIA RECEBIDA", "TED RECEBIDA", "DEPOSITO", "SALARIO",
-      "RENDIMENTO", "REEMBOLSO", "ESTORNO", "CREDITO"
+      "RENDIMENTO", "REEMBOLSO", "ESTORNO", "CREDITO", "RECEBIMENTO", "RESGATE",
+      "CASHBACK", "REFUND", "PAYROLL", "DIRECT DEPOSIT", "PREAUTHORIZED CREDIT",
+      "INTEREST CREDIT", "CREDIT ADJUSTMENT", "PAYMENT RECEIVED"
     ];
     const debitWords = [
       "PIX ENVIADO", "PAGAMENTO", "DEBITO", "BOLETO", "SAQUE", "TARIFA", "COMPRA",
-      "TRANSFERENCIA ENVIADA"
+      "TRANSFERENCIA ENVIADA", "PAGTO", "PURCHASE", "WITHDRAWAL", "ATM ", "CHECK ",
+      "SERVICE CHARGE", "FEE", "DIRECT DEBIT", "AUTOMATIC PAYMENT", "TAX"
     ];
     if (money.indicator === "C") return "income";
     if (money.indicator === "D") return "expense";
@@ -277,12 +315,16 @@
   function parseStatementLine(line, fileName = "extrato.pdf", context = {}) {
     const text = typeof line === "string" ? line : line?.text;
     if (!text) return null;
-    const dateParts = datePartsAtStart(text);
+    const dateParts = datePartsInTransaction(text);
     const money = parseMoneyAtEnd(text, context);
     if (!dateParts || !money || isSummaryLine(text, context)) return null;
     const date = parseStatementDate(dateParts, context);
     if (!date) return null;
-    const description = cleanDescription(text.slice(dateParts.length, money.index)) || "Movimentacao importada";
+    const beforeDateRaw = text.slice(0, dateParts.index || 0);
+    const beforeDate = /^(?:(?:CARTAO|CARD|FINAL|FIM|TERMINAL)\s*)?[*X#-]*\d{2,8}$/
+      .test(comparable(beforeDateRaw)) ? "" : beforeDateRaw;
+    const afterDate = text.slice((dateParts.index || 0) + dateParts.length, money.index);
+    const description = cleanDescription(`${beforeDate} ${afterDate}`) || "Movimentacao importada";
     const type = inferTransactionType(description, money, context);
     return {
       id: "",
@@ -292,7 +334,9 @@
       date,
       category: "",
       categoryLabel: typeof line === "object" ? String(line.categoryLabel || "") : "",
-      account: typeof line === "object" && line.account ? String(line.account) : "Extrato importado",
+      account: typeof line === "object" && line.account
+        ? String(line.account)
+        : context.documentType === "credit_card_invoice" ? "Cartão importado" : "Extrato importado",
       recurring: false,
       notes: `Importado de ${fileName}`
     };
@@ -360,6 +404,14 @@
     return item ? rowItemX(item) : null;
   }
 
+  function headerXAny(row, labels) {
+    for (const label of labels) {
+      const value = headerX(row, label);
+      if (Number.isFinite(value)) return value;
+    }
+    return null;
+  }
+
   function textInColumn(row, start, end = Infinity) {
     return (row.items || [])
       .filter((item) => rowItemX(item) >= start - 2 && rowItemX(item) < end - 2)
@@ -380,14 +432,23 @@
   }
 
   function structuredHeader(row) {
-    const text = comparable(row.text);
-    if (/\bDATA\s+DESCRICAO\s+CATEGORIA\s+CONTA\s+VALOR\b/.test(text)) {
-      const starts = ["DATA", "DESCRICAO", "CATEGORIA", "CONTA", "VALOR"].map((label) => headerX(row, label));
-      return starts.every(Number.isFinite) ? { type: "gates", starts } : null;
+    const date = headerXAny(row, ["DATA", "DATE", "DT", "DATA DA COMPRA", "TRANSACTION DATE"]);
+    const description = headerXAny(row, ["DESCRICAO", "DESCRIPTION", "LANCAMENTO", "ESTABELECIMENTO", "HISTORICO", "MERCHANT"]);
+    const amount = headerXAny(row, ["VALOR", "AMOUNT", "VALOR R$", "VALOR (R$)", "TRANSACTION AMOUNT"]);
+    const category = headerXAny(row, ["CATEGORIA", "CATEGORY"]);
+    const account = headerXAny(row, ["CONTA", "ACCOUNT"]);
+    const debit = headerXAny(row, ["DEBITO", "DEBIT"]);
+    const credit = headerXAny(row, ["CREDITO", "CREDIT"]);
+    const balance = headerXAny(row, ["SALDO", "BALANCE"]);
+
+    if ([date, description, debit, credit, balance].every(Number.isFinite)) {
+      return { type: "bank", starts: [date, description, debit, credit, balance] };
     }
-    if (/\bDATE\s+DESCRIPTION\s+DEBIT\s+CREDIT\s+BALANCE\b/.test(text)) {
-      const starts = ["DATE", "DESCRIPTION", "DEBIT", "CREDIT", "BALANCE"].map((label) => headerX(row, label));
-      return starts.every(Number.isFinite) ? { type: "bank", starts } : null;
+    if ([date, description, category, account, amount].every(Number.isFinite)) {
+      return { type: "gates", starts: [date, description, category, account, amount] };
+    }
+    if ([date, description, amount].every(Number.isFinite) && date < description && description < amount) {
+      return { type: "simple", starts: [date, description, amount] };
     }
     return null;
   }
@@ -405,16 +466,24 @@
       }
       const header = structuredHeader(row);
       if (header) {
+        const boundaries = header.type === "simple"
+          ? [
+              -Infinity,
+              (header.starts[0] + header.starts[1]) / 2,
+              (header.starts[1] + header.starts[2]) / 2,
+              Infinity
+            ]
+          : [
+              -Infinity,
+              (header.starts[0] + header.starts[1]) / 2,
+              (header.starts[1] + header.starts[2]) / 2,
+              (header.starts[2] + header.starts[3]) / 2,
+              (header.starts[3] + header.starts[4]) / 2,
+              Infinity
+            ];
         table = {
           ...header,
-          boundaries: [
-            -Infinity,
-            (header.starts[0] + header.starts[1]) / 2,
-            (header.starts[1] + header.starts[2]) / 2,
-            (header.starts[2] + header.starts[3]) / 2,
-            (header.starts[3] + header.starts[4]) / 2,
-            Infinity
-          ]
+          boundaries
         };
         foundTable = true;
         continue;
@@ -423,7 +492,20 @@
         table = null;
         continue;
       }
-      if (!table || !datePartsAtStart(row.text)) continue;
+      if (!table || !datePartsInTransaction(row.text)) continue;
+
+      if (table.type === "simple") {
+        const [dateStart, descriptionStart, amountStart, tableEnd] = table.boundaries;
+        const date = textInColumn(row, dateStart, descriptionStart);
+        const description = textInColumn(row, descriptionStart, amountStart);
+        const amount = textInColumn(row, amountStart, tableEnd);
+        if (!date || !description || !parseMoneyAtEnd(amount)) continue;
+        normalized.push({
+          ...row,
+          text: cleanDescription(`${date} ${description} ${amount}`)
+        });
+        continue;
+      }
 
       const [dateStart, descriptionStart, thirdStart, fourthStart, fifthStart, tableEnd] = table.boundaries;
       const date = textInColumn(row, dateStart, descriptionStart);
@@ -462,19 +544,19 @@
     const repeated = new Map();
     ordered.forEach((row) => {
       const key = comparable(row.text);
-      if (!datePartsAtStart(row.text) && !parseMoneyAtEnd(row.text)) repeated.set(key, (repeated.get(key) || 0) + 1);
+      if (!datePartsInTransaction(row.text) && !parseMoneyAtEnd(row.text)) repeated.set(key, (repeated.get(key) || 0) + 1);
     });
-    const filtered = ordered.filter((row) => (repeated.get(comparable(row.text)) || 0) < 2 || datePartsAtStart(row.text));
+    const filtered = ordered.filter((row) => (repeated.get(comparable(row.text)) || 0) < 2 || datePartsInTransaction(row.text));
     const combined = [];
 
     for (let index = 0; index < filtered.length; index += 1) {
       const row = filtered[index];
-      if (!datePartsAtStart(row.text)) continue;
+      if (!datePartsInTransaction(row.text)) continue;
       let text = row.text;
       let consumed = 0;
       while (!parseMoneyAtEnd(text) && consumed < 3) {
         const next = filtered[index + consumed + 1];
-        if (!next || next.page !== row.page || datePartsAtStart(next.text)) break;
+        if (!next || next.page !== row.page || datePartsInTransaction(next.text)) break;
         text = `${text} ${next.text}`;
         consumed += 1;
       }
@@ -556,6 +638,7 @@
     combineContinuationLines,
     comparable,
     datePartsAtStart,
+    datePartsInTransaction,
     detectDocumentContext,
     ensureFallbackCategory,
     groupPdfTextItems,

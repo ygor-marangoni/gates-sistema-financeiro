@@ -253,3 +253,68 @@ test("tabela OCR continua na página seguinte mesmo sem repetir o cabeçalho", (
   assert.equal(result.transactions.length, 2);
   assert.equal(result.transactions[1].description, "SERVICE CHARGE");
 });
+
+test("faturas genéricas aceitam data após identificação do cartão ou estabelecimento", () => {
+  const prefixed = parse("FINAL 1234 10/06 MERCADO CENTRAL R$ 186,42");
+  const dateInMiddle = parse("LOJA CENTRAL 10/06/2026 R$ 99,90");
+  assert.equal(prefixed.date, "2026-06-10");
+  assert.equal(prefixed.description, "MERCADO CENTRAL");
+  assert.equal(dateInMiddle.date, "2026-06-10");
+  assert.equal(dateInMiddle.description, "LOJA CENTRAL");
+});
+
+test("valores genéricos reconhecem CR, DR, parênteses e moedas internacionais", () => {
+  const credit = parse("10/06 AJUSTE DE CREDITO EUR 45,90 CR");
+  const debit = parse("10/06 COMPRA INTERNACIONAL US$ 12.50 DR");
+  const parenthesized = parse("10/06 TARIFA (R$ 8,75)");
+  assert.equal(credit.type, "income");
+  assert.equal(credit.amount, 45.9);
+  assert.equal(debit.type, "expense");
+  assert.equal(debit.amount, 12.5);
+  assert.equal(parenthesized.type, "expense");
+  assert.equal(parenthesized.amount, 8.75);
+});
+
+test("contexto de fatura em inglês usa mês/dia e ignora linhas de resumo", () => {
+  const context = parser.detectDocumentContext("CARD STATEMENT\nDUE DATE 07/15/2026\nMINIMUM PAYMENT US$ 25.00");
+  const purchase = parser.parseStatementLine("07/01 COFFEE SHOP US$ 20.50", "card.pdf", context);
+  assert.equal(context.documentType, "credit_card_invoice");
+  assert.equal(context.dateOrder, "mdy");
+  assert.equal(purchase.date, "2026-07-01");
+  assert.equal(purchase.account, "Cartão importado");
+  assert.equal(parser.parseStatementLine("07/15 AMOUNT DUE US$ 500.00", "card.pdf", context), null);
+});
+
+test("tabela simples de fatura aceita Data, Estabelecimento e Valor", () => {
+  const rows = [
+    {
+      page: 1,
+      y: 900,
+      text: "Data Estabelecimento Valor",
+      items: [
+        { text: "Data", x: 100 },
+        { text: "Estabelecimento", x: 280 },
+        { text: "Valor", x: 720 }
+      ]
+    },
+    {
+      page: 1,
+      y: 820,
+      text: "10/06 Mercado Central R$ 186,42",
+      items: [
+        { text: "10/06", x: 100 },
+        { text: "Mercado", x: 280 },
+        { text: "Central", x: 350 },
+        { text: "R$", x: 720 },
+        { text: "186,42", x: 750 }
+      ]
+    }
+  ];
+  const result = parser.parseDocumentRows(rows, "fatura.pdf", [], {
+    fallbackYear: 2026,
+    today: "2026-06-30"
+  });
+  assert.equal(result.transactions.length, 1);
+  assert.equal(result.transactions[0].description, "Mercado Central");
+  assert.equal(result.transactions[0].amount, 186.42);
+});

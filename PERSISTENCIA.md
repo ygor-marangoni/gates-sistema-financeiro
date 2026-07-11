@@ -1,6 +1,25 @@
-# Persistencia dos dados
+# Persistência dos dados
 
-O frontend usa `/api/data` para ler e salvar o estado completo da area financeira.
+O Gates é uma aplicação estática, sem login, autenticação, conta de usuário ou banco de dados remoto.
+
+## Como funciona
+
+- O estado financeiro completo é salvo no `localStorage` do navegador.
+- Cada navegador e domínio possui seu próprio armazenamento; visitantes diferentes não compartilham dados.
+- Uma instalação nova começa vazia.
+- O arquivo opcional `data/financeiro.json` só é lido como carga inicial quando ainda não existe estado local.
+- `data/financeiro.json` fica ignorado pelo Git para impedir a publicação acidental de informações pessoais.
+
+## Importação e exportação
+
+O botão **Exportar** gera um backup JSON com lançamentos, categorias, contas, orçamentos e metas. Para transferir os dados a outra guia anônima, navegador ou domínio:
+
+1. Exporte o JSON no navegador de origem.
+2. Abra o Gates no navegador de destino.
+3. Use **Importar > Backup JSON**.
+4. Revise e confirme a substituição do estado local.
+
+Extratos e faturas em PDF também são processados localmente no navegador. O documento não é enviado a uma API externa.
 
 ## Desenvolvimento local
 
@@ -10,18 +29,19 @@ Execute:
 node server.js
 ```
 
-Abra o endereco exibido pelo comando, normalmente `http://localhost:4173`. Nao use o Live Server na porta `8080`: ele serve apenas arquivos estaticos e, por isso, nao possui a rota `/api/data`.
+Abra `http://127.0.0.1:4173`. O servidor apenas entrega os arquivos estáticos e não possui `/api/data`.
 
-O servidor grava cada alteracao em `data/financeiro.json`. Esse arquivo fica ignorado pelo Git para que os dados locais nunca sejam publicados por acidente.
+Também é possível abrir `index.html` diretamente, embora um servidor local ofereça melhor compatibilidade com bibliotecas carregadas pelo navegador.
 
 ## Cloudflare Pages
 
-O deploy pelo Git nao utiliza um comando de deploy. A funcao em `functions/api/data.js` cria o endpoint `/api/data` e salva o mesmo payload JSON em KV.
+Use o projeto como site estático:
 
-O arquivo `wrangler.jsonc` declara o binding `FINANCE_DATA` para o desenvolvimento local. No deploy de producao do Pages, associe um namespace existente e informe o respectivo `id` nessa declaracao antes de refazer o deploy.
+```text
+Framework preset: None
+Build command: vazio
+Build output directory: .
+Root directory: vazio
+```
 
-Pelo painel, abra `Settings > Bindings`, adicione um binding do tipo `KV namespace` com o nome exato `FINANCE_DATA`, selecione um namespace e refaca o deploy. Bindings so entram em vigor depois de uma nova implantacao.
-
-Para este projeto sem framework, deixe o Build command vazio (ou use `exit 0`), o Root directory vazio e o Build output directory como `.`.
-
-Como o modulo nao possui autenticacao, o dado remoto e compartilhado por todos os acessos da mesma implantacao. O export JSON continua disponivel para levar os dados a outra guia ou implantacao.
+Não configure KV, D1, variáveis de autenticação ou Pages Functions. A privacidade vem do armazenamento local isolado de cada navegador e da portabilidade explícita pelo backup JSON.

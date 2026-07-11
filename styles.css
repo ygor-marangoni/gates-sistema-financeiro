@@ -2846,6 +2846,19 @@ body[data-view="goals"] .metrics-grid {
     background: var(--surface);
 }
 
+.import-modal.pdf-review-mode {
+    display: grid;
+    width: min(100%, 58rem);
+    max-height: min(90dvh, 50rem);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    overflow: hidden;
+}
+
+.pdf-review-mode .import-body {
+    min-height: 0;
+    overflow: hidden;
+}
+
 .import-head {
     display: flex;
     align-items: center;
@@ -2997,43 +3010,147 @@ body[data-view="goals"] .metrics-grid {
     white-space: nowrap;
 }
 
+.pdf-review-overview {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.8rem 0.9rem;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface-soft);
+}
+
+.pdf-review-intro {
+    min-width: 0;
+}
+
+.pdf-review-file {
+    display: block;
+    overflow: hidden;
+    margin-bottom: 0.2rem;
+    color: var(--muted);
+    font-size: 0.7rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pdf-review-intro strong {
+    display: block;
+    color: var(--text);
+    font-size: 0.88rem;
+    font-weight: 650;
+}
+
+.pdf-review-intro p {
+    margin-top: 0.12rem;
+    color: var(--muted);
+    font-size: 0.75rem;
+}
+
+.pdf-review-totals {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(5.5rem, 1fr));
+}
+
+.pdf-review-totals > div {
+    padding: 0 0.8rem;
+    border-left: 1px solid var(--line);
+}
+
+.pdf-review-totals span,
+.pdf-review-totals strong {
+    display: block;
+}
+
+.pdf-review-totals span {
+    color: var(--muted);
+    font-size: 0.68rem;
+}
+
+.pdf-review-totals strong {
+    margin-top: 0.08rem;
+    color: var(--text);
+    font-size: 0.92rem;
+    font-weight: 650;
+}
+
+.pdf-review-toolbar {
+    display: flex;
+    min-height: 2.5rem;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-top: 0.65rem;
+    padding: 0 0.15rem;
+    color: var(--muted);
+    font-size: 0.74rem;
+}
+
+.pdf-review-toolbar label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    cursor: pointer;
+}
+
+.pdf-review-toolbar input,
+.import-row-checkbox {
+    width: 1rem;
+    height: 1rem;
+    flex: 0 0 1rem;
+    accent-color: var(--primary);
+}
+
+#pdfSelectionCount {
+    color: var(--text-soft);
+    font-weight: 600;
+}
+
 .import-preview-list {
     display: grid;
-    gap: 0.4rem;
-    max-height: 22rem;
-    margin-top: 0.65rem;
+    gap: 0.5rem;
+    max-height: min(49dvh, 28rem);
     overflow-y: auto;
+    padding-right: 0.2rem;
 }
 
 .import-preview-row {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr) 6.5rem auto;
+    grid-template-columns: auto minmax(0, 1fr) 7.5rem 8.5rem;
     align-items: center;
-    gap: 0.6rem;
-    padding: 0.6rem;
+    gap: 0.75rem;
+    padding: 0.7rem 0.75rem;
     border: 1px solid var(--line);
-    border-radius: 7px;
+    border-radius: 8px;
+    background: var(--surface);
+    transition: border-color 0.15s, background 0.15s;
+}
+
+.import-preview-row:hover {
+    border-color: var(--line-strong);
     background: var(--surface-soft);
 }
 
 .import-preview-row.duplicate {
-    opacity: 0.55;
+    background: var(--surface-muted);
+    opacity: 0.68;
 }
 
-.import-preview-row > input[type="checkbox"] {
-    width: 1rem;
-    height: 1rem;
-    accent-color: var(--primary);
+.import-row-checkbox:disabled {
+    cursor: not-allowed;
 }
 
 .import-preview-copy {
+    display: grid;
     min-width: 0;
+    gap: 0.3rem;
 }
 
 .import-preview-copy input,
 .import-preview-row select {
     width: 100%;
-    min-height: 2rem;
+    min-height: 2.2rem;
     border: 1px solid var(--line);
     border-radius: 6px;
     background: var(--surface);
@@ -3055,16 +3172,46 @@ body[data-view="goals"] .metrics-grid {
     border-color: var(--primary);
 }
 
-.import-preview-copy span {
-    display: block;
-    margin-top: 0.14rem;
+.import-preview-meta {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.import-preview-meta span,
+.import-preview-meta em {
     color: var(--muted);
     font-size: 0.68rem;
 }
 
-.import-preview-row > strong {
+.import-preview-meta em {
+    color: var(--warning);
+    font-style: normal;
+    font-weight: 600;
+}
+
+.import-preview-type,
+.import-preview-amount {
+    display: grid;
+    gap: 0.25rem;
+}
+
+.import-preview-type > span,
+.import-preview-amount > span {
+    color: var(--muted);
+    font-size: 0.66rem;
+}
+
+.import-preview-amount {
+    justify-items: end;
+    text-align: right;
+}
+
+.import-preview-amount strong {
     color: var(--text);
-    font-size: 0.78rem;
+    font-size: 0.82rem;
+    font-weight: 650;
     white-space: nowrap;
 }
 
@@ -4248,21 +4395,69 @@ body.dark-mode #goalsView .goal-item:hover {
 }
 
 @media (max-width: 767px) {
+    .import-overlay {
+        padding: 0.5rem;
+    }
+
+    .import-modal.pdf-review-mode {
+        max-height: calc(100dvh - 1rem);
+        padding: 0.8rem;
+    }
+
     .import-type-grid {
         grid-template-columns: 1fr;
     }
 
-    .import-preview-row {
-        grid-template-columns: auto minmax(0, 1fr) auto;
+    .pdf-review-overview {
+        grid-template-columns: 1fr;
+        gap: 0.7rem;
     }
 
-    .import-preview-row select {
+    .pdf-review-totals {
+        border-top: 1px solid var(--line);
+        padding-top: 0.65rem;
+    }
+
+    .pdf-review-totals > div:first-child {
+        padding-left: 0;
+        border-left: 0;
+    }
+
+    .pdf-review-toolbar {
+        min-height: 2.25rem;
+        margin-top: 0.45rem;
+    }
+
+    .import-preview-list {
+        max-height: 51dvh;
+    }
+
+    .import-preview-row {
+        grid-template-columns: auto minmax(0, 1fr);
+        align-items: start;
+        gap: 0.55rem 0.65rem;
+        padding: 0.65rem;
+    }
+
+    .import-row-checkbox {
+        margin-top: 1.25rem;
+    }
+
+    .import-preview-type {
         grid-column: 2;
     }
 
-    .import-preview-row > strong {
-        grid-column: 3;
-        grid-row: 1 / span 2;
+    .import-preview-amount {
+        grid-column: 2;
+        grid-template-columns: auto auto;
+        align-items: center;
+        justify-content: space-between;
+        justify-items: stretch;
+        text-align: left;
+    }
+
+    .import-preview-amount strong {
+        text-align: right;
     }
 
     #transactionsView .table-wrap {

@@ -6,7 +6,7 @@
 
 Abra `index.html` no navegador ou acesse a pasta pelo mesmo servidor estático usado pelo projeto principal.
 
-Quando `data/financeiro.json` existe, ele é usado como carga inicial e reaplicado sempre que seu conteúdo muda. Depois da carga, as alterações feitas pela interface permanecem no `localStorage`. Se o arquivo não existir no deploy, o módulo usa o estado local ou inicia vazio. A interface também permite exportar e importar um JSON com lançamentos, orçamentos e metas.
+Os dados ficam no `localStorage` do próprio navegador, sem conta, login ou backend. Se `data/financeiro.json` existir, ele serve apenas como carga inicial quando ainda não houver dados locais. Uma instalação nova começa vazia. Para levar lançamentos, categorias, contas, orçamentos e metas a outro navegador, use **Exportar** e depois **Importar > Backup JSON**.
 
 ## Recursos
 
@@ -24,4 +24,4 @@ Quando `data/financeiro.json` existe, ele é usado como carga inicial e reaplica
 
 ## Escopo
 
-Este módulo não altera os arquivos da agenda na raiz do projeto. A agenda e a área financeira possuem estados locais separados.
+Cada navegador mantém seu próprio estado. Publicar o projeto não publica os dados financeiros locais e pessoas diferentes não compartilham informações entre si.

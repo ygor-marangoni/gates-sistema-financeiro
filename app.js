@@ -1,24 +1,15 @@
 "use strict";
 
 const DATA_URL = "data/financeiro.json";
-const DATA_API_URL = "/api/data";
 const STORAGE_KEY = "gates_financeiro_state_v1";
-const DATA_SNAPSHOT_KEY = "gates_financeiro_data_snapshot_v1";
 const PDFJS_VERSION = "3.11.174";
 const PDF_MAX_FILE_SIZE = 20 * 1024 * 1024;
 const PDF_WORKER_URL = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.js`;
 const TESSERACT_VERSION = "7.0.0";
 const TESSERACT_URL = `https://cdn.jsdelivr.net/npm/tesseract.js@${TESSERACT_VERSION}/dist/tesseract.min.js`;
-const PDF_OCR_MAX_PAGES = 12;
+const PDF_OCR_MAX_PAGES = 20;
 const PDF_OCR_RENDER_SCALE = 3;
 const PDF_OCR_MAX_DIMENSION = 4096;
-
-let remoteSaveChain = Promise.resolve();
-let remoteSyncWarned = false;
-let remoteSyncDisabled = false;
-let remoteSaveTimer = null;
-let pendingRemotePayload = null;
-let pendingRemoteResolvers = [];
 
 const DEFAULT_CATEGORIES = { income: [], expense: [] };
 
@@ -156,6 +147,7 @@ const els = {
   importJsonInput: document.getElementById("importJsonInput"),
   importPdfInput: document.getElementById("importPdfInput"),
   importOverlay: document.getElementById("importOverlay"),
+  importModal: document.getElementById("importModal"),
   importTitle: document.getElementById("importTitle"),
   importBody: document.getElementById("importBody"),
   importActions: document.getElementById("importActions"),
@@ -505,76 +497,25 @@ function normalizeGoal(item) {
 
 async function loadData() {
   const persisted = loadPersistedState();
-  let remoteAvailable = false;
-
-  try {
-    const response = await fetch(DATA_API_URL, { cache: "no-store" });
-    if (response.ok) {
-      const payload = await response.json();
-      remoteAvailable = true;
-      if (payload && typeof payload === "object" && Object.keys(payload).length) {
-        app.state = normalizeState(payload);
-        await saveState({ sync: false });
-        saveDataSnapshot(dataSnapshot(payload));
-        return;
-      }
-    }
-    if (response.status === 503) {
-      remoteSyncDisabled = true;
-      if (!remoteSyncWarned) {
-        remoteSyncWarned = true;
-        showToast("Base de dados remota indisponível. As alterações ficarão neste dispositivo.");
-      }
-    }
-  } catch {
-    // The API is optional during static development; continue with local data.
+  if (persisted) {
+    app.state = persisted;
+    return;
   }
 
   try {
     const response = await fetch(DATA_URL, { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
-    const snapshot = dataSnapshot(payload);
-    const previousSnapshot = loadDataSnapshot();
-
-    if (!persisted || snapshot !== previousSnapshot) {
+    if (payload && typeof payload === "object" && Object.keys(payload).length) {
       app.state = normalizeState(payload);
-      saveDataSnapshot(snapshot);
-      await saveState({ sync: remoteAvailable });
+      await saveState({ sync: false });
       return;
     }
   } catch {
-    // The data file is optional in production; local state remains the fallback.
+    // The optional initial JSON is intentionally absent in a fresh installation.
   }
 
-  app.state = persisted || seedState();
-  await saveState({ sync: remoteAvailable });
-}
-
-function dataSnapshot(payload) {
-  const source = JSON.stringify(payload);
-  let hash = 2166136261;
-  for (let index = 0; index < source.length; index += 1) {
-    hash ^= source.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `${source.length}-${(hash >>> 0).toString(16)}`;
-}
-
-function loadDataSnapshot() {
-  try {
-    return localStorage.getItem(DATA_SNAPSHOT_KEY) || "";
-  } catch {
-    return "";
-  }
-}
-
-function saveDataSnapshot(snapshot) {
-  try {
-    localStorage.setItem(DATA_SNAPSHOT_KEY, snapshot);
-  } catch {
-    // Persistence can be unavailable in private browsing; loaded data still works.
-  }
+  app.state = seedState();
 }
 
 function loadPersistedState() {
@@ -587,80 +528,19 @@ function loadPersistedState() {
   }
 }
 
-function saveState({ sync = true, strict = false } = {}) {
+function saveState({ strict = false } = {}) {
   const payload = {
     version: 1,
     updatedAt: new Date().toISOString(),
     ...app.state
   };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-  if (!sync) return Promise.resolve({ remote: false });
-  if (remoteSyncDisabled) {
-    return strict
-      ? Promise.reject(new Error("REMOTE_SYNC_UNAVAILABLE"))
-      : Promise.resolve({ remote: false });
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    return Promise.resolve({ local: true });
+  } catch (error) {
+    if (!strict) showToast("Não foi possível salvar os dados neste navegador.");
+    return strict ? Promise.reject(error) : Promise.resolve({ local: false });
   }
-  return queueRemoteSave(payload, { strict });
-}
-
-function queueRemoteSave(payload, { strict = false } = {}) {
-  pendingRemotePayload = payload;
-  if (!strict) {
-    return new Promise((resolve) => {
-      pendingRemoteResolvers.push(resolve);
-      if (remoteSaveTimer) window.clearTimeout(remoteSaveTimer);
-      remoteSaveTimer = window.setTimeout(() => {
-        const latestPayload = pendingRemotePayload;
-        const resolvers = pendingRemoteResolvers;
-        pendingRemotePayload = null;
-        pendingRemoteResolvers = [];
-        remoteSaveTimer = null;
-        performRemoteSave(latestPayload).then((result) => {
-          resolvers.forEach((settle) => settle(result));
-        });
-      }, 450);
-    });
-  }
-
-  if (remoteSaveTimer) window.clearTimeout(remoteSaveTimer);
-  remoteSaveTimer = null;
-  pendingRemotePayload = null;
-  const resolvers = pendingRemoteResolvers;
-  pendingRemoteResolvers = [];
-  const operation = performRemoteSave(payload, { strict: true });
-  operation.then(
-    (result) => resolvers.forEach((settle) => settle(result)),
-    () => resolvers.forEach((settle) => settle({ remote: false }))
-  );
-  return operation;
-}
-
-function performRemoteSave(payload, { strict = false } = {}) {
-  const operation = remoteSaveChain
-    .catch(() => undefined)
-    .then(async () => {
-      const response = await fetch(DATA_API_URL, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-      if (!response.ok) {
-        const error = new Error(`HTTP ${response.status}`);
-        error.status = response.status;
-        throw error;
-      }
-      remoteSyncWarned = false;
-      return { remote: true };
-    });
-  remoteSaveChain = operation.catch((error) => {
-    if (error?.status === 503) remoteSyncDisabled = true;
-    if (!strict && !remoteSyncWarned && window.location.protocol !== "file:") {
-      remoteSyncWarned = true;
-      showToast("Alteração salva neste dispositivo; a sincronização será tentada novamente.");
-    }
-    return { remote: false };
-  });
-  return strict ? operation : remoteSaveChain;
 }
 
 function exportPayload() {
@@ -3051,6 +2931,7 @@ function exportJSON() {
 
 function renderImportChoices() {
   app.pendingImport = null;
+  els.importModal.classList.remove("pdf-review-mode");
   els.importTitle.textContent = "Importar dados";
   els.importActions.classList.add("hidden");
   els.importConfirm.disabled = false;
@@ -3093,6 +2974,7 @@ function closeImportModal() {
 async function prepareJsonImport(file) {
   const payload = JSON.parse(await file.text());
   const state = normalizeState(payload);
+  els.importModal.classList.remove("pdf-review-mode");
   app.pendingImport = { type: "json", state };
   els.importTitle.textContent = "Revisar backup JSON";
   els.importBody.innerHTML = `
@@ -3251,17 +3133,30 @@ async function extractPdfTransactions(file) {
       page.cleanup();
     }
 
-    if (!textItemCount) {
-      updateImportLoading("O documento não possui texto. Iniciando leitura visual...");
-      rows.push(...await extractOcrRows(pdf));
+    const parseOptions = { fallbackYear: new Date().getFullYear(), today: toISO(new Date()) };
+    let parsed = rows.length
+      ? window.GatesPdfParser.parseDocumentRows(
+          rows,
+          file.name,
+          app.state.transactions,
+          parseOptions
+        )
+      : { transactions: [] };
+
+    if (!parsed.transactions.length) {
+      updateImportLoading(textItemCount
+        ? "O texto do documento não foi suficiente. Iniciando leitura visual..."
+        : "O documento não possui texto. Iniciando leitura visual...");
+      const ocrRows = await extractOcrRows(pdf);
+      if (!ocrRows.length && !textItemCount) throw new Error("PDF_EMPTY_TEXT");
+      parsed = window.GatesPdfParser.parseDocumentRows(
+        ocrRows,
+        file.name,
+        app.state.transactions,
+        parseOptions
+      );
     }
-    if (!rows.length) throw new Error("PDF_EMPTY_TEXT");
-    const parsed = window.GatesPdfParser.parseDocumentRows(
-      rows,
-      file.name,
-      app.state.transactions,
-      { fallbackYear: new Date().getFullYear(), today: toISO(new Date()) }
-    );
+
     if (!parsed.transactions.length) throw new Error("PDF_NO_TRANSACTIONS");
     return parsed.transactions.map((item) => ({ ...item, id: item.id || uid("transaction") }));
   } catch (error) {
@@ -3293,7 +3188,7 @@ function pdfImportErrorMessage(code) {
     PDF_INVALID: "Este arquivo não é um PDF válido.",
     PDF_PASSWORD_PROTECTED: "Este PDF está protegido por senha.",
     PDF_TOO_LARGE: "O arquivo excede o tamanho permitido.",
-    PDF_EMPTY_TEXT: "Este PDF não possui texto selecionável.",
+    PDF_EMPTY_TEXT: "Não foi possível reconhecer texto neste PDF.",
     PDF_NO_TRANSACTIONS: "Nenhuma movimentação foi identificada neste documento.",
     PDF_PROCESSING_FAILED: "Não foi possível processar o PDF."
   }[code] || "Não foi possível processar o PDF.";
@@ -3302,41 +3197,79 @@ function pdfImportErrorMessage(code) {
 function renderPdfImportPreview(file, transactions, errorCode = "") {
   app.pendingImport = { type: "pdf", transactions };
   const selectable = transactions.filter((item) => !item.duplicate).length;
+  const duplicates = transactions.length - selectable;
   const emptyMessage = errorCode ? pdfImportErrorMessage(errorCode) : "Nenhuma movimentação identificada.";
+  els.importModal.classList.add("pdf-review-mode");
   els.importTitle.textContent = "Revisar extrato PDF";
   els.importBody.innerHTML = `
-    <div class="import-review-note">
-      <strong>${transactions.length ? `${transactions.length} movimentações encontradas` : "Nenhuma movimentação identificada"}</strong>
-      <span>${transactions.length ? `${selectable} disponíveis para importar. Revise o tipo de cada item.` : escapeHTML(emptyMessage)}</span>
+    <div class="pdf-review-overview">
+      <div class="pdf-review-intro">
+        <span class="pdf-review-file" title="${escapeHTML(file.name)}">${escapeHTML(file.name)}</span>
+        <strong>${transactions.length ? `${transactions.length} movimentações encontradas` : "Nenhuma movimentação identificada"}</strong>
+        <p>${transactions.length ? "Confira as descrições e os tipos antes de adicionar os lançamentos." : escapeHTML(emptyMessage)}</p>
+      </div>
+      ${transactions.length ? `
+        <div class="pdf-review-totals" aria-label="Resumo da extração">
+          <div><span>Disponíveis</span><strong>${selectable}</strong></div>
+          <div><span>Duplicatas</span><strong>${duplicates}</strong></div>
+        </div>
+      ` : ""}
     </div>
     ${transactions.length ? `
-      <div class="import-preview-list">
+      <div class="pdf-review-toolbar">
+        <label>
+          <input id="pdfSelectAll" type="checkbox" ${selectable ? "checked" : "disabled"}>
+          <span>Selecionar disponíveis</span>
+        </label>
+        <span id="pdfSelectionCount" aria-live="polite">${selectable} selecionados</span>
+      </div>
+      <div class="import-preview-list" role="list" aria-label="Movimentações encontradas">
         ${transactions.map((item, index) => `
-          <label class="import-preview-row ${item.duplicate ? "duplicate" : ""}" data-import-index="${index}">
-            <input type="checkbox" ${item.duplicate ? "disabled" : "checked"}>
+          <div class="import-preview-row ${item.duplicate ? "duplicate" : ""}" data-import-index="${index}" role="listitem">
+            <input class="import-row-checkbox" type="checkbox" aria-label="Selecionar ${escapeHTML(item.description)}" ${item.duplicate ? "disabled" : "checked"}>
             <div class="import-preview-copy">
+              <div class="import-preview-meta">
+                <span>${escapeHTML(formatFullDate(fromISO(item.date)))}</span>
+                ${item.duplicate ? '<em>Possível duplicata</em>' : ""}
+              </div>
               <input type="text" value="${escapeHTML(item.description)}" aria-label="Descrição importada">
-              <span>${escapeHTML(formatFullDate(fromISO(item.date)))}${item.duplicate ? " · Possível duplicata" : ""}</span>
             </div>
-            <select aria-label="Tipo do lançamento importado">
-              <option value="expense" ${item.type === "expense" ? "selected" : ""}>Saída</option>
-              <option value="income" ${item.type === "income" ? "selected" : ""}>Entrada</option>
-            </select>
-            <strong>${brl(item.amount)}</strong>
-          </label>
+            <label class="import-preview-type">
+              <span>Tipo</span>
+              <select aria-label="Tipo do lançamento importado">
+                <option value="expense" ${item.type === "expense" ? "selected" : ""}>Saída</option>
+                <option value="income" ${item.type === "income" ? "selected" : ""}>Entrada</option>
+              </select>
+            </label>
+            <div class="import-preview-amount"><span>Valor</span><strong>${brl(item.amount)}</strong></div>
+          </div>
         `).join("")}
       </div>
     ` : ""}
-    <p class="import-file-name">${escapeHTML(file.name)}</p>
   `;
-  els.importConfirm.textContent = "Importar lançamentos";
-  els.importConfirm.disabled = selectable === 0;
+  updatePdfImportSelection();
   els.importActions.classList.remove("hidden");
+}
+
+function updatePdfImportSelection() {
+  if (app.pendingImport?.type !== "pdf") return;
+  const checkboxes = [...els.importBody.querySelectorAll(".import-row-checkbox:not(:disabled)")];
+  const selected = checkboxes.filter((checkbox) => checkbox.checked).length;
+  const selectAll = els.importBody.querySelector("#pdfSelectAll");
+  if (selectAll) {
+    selectAll.checked = Boolean(checkboxes.length) && selected === checkboxes.length;
+    selectAll.indeterminate = selected > 0 && selected < checkboxes.length;
+  }
+  const count = els.importBody.querySelector("#pdfSelectionCount");
+  if (count) count.textContent = `${selected} ${selected === 1 ? "selecionado" : "selecionados"}`;
+  els.importConfirm.disabled = selected === 0;
+  els.importConfirm.textContent = selected === 1 ? "Importar 1 lançamento" : `Importar ${selected} lançamentos`;
 }
 
 async function preparePdfImport(file) {
   if (app.pdfImportInProgress) return;
   app.pdfImportInProgress = true;
+  els.importModal.classList.add("pdf-review-mode");
   els.importTitle.textContent = "Lendo extrato";
   els.importBody.innerHTML = '<div class="import-loading">Analisando as movimentações do PDF...</div>';
   els.importActions.classList.add("hidden");
@@ -3653,6 +3586,15 @@ function bindEvents() {
     if (!option) return;
     if (option.dataset.importType === "json") els.importJsonInput.click();
     if (option.dataset.importType === "pdf") els.importPdfInput.click();
+  });
+  els.importBody.addEventListener("change", (event) => {
+    if (event.target.id === "pdfSelectAll") {
+      els.importBody.querySelectorAll(".import-row-checkbox:not(:disabled)")
+        .forEach((checkbox) => { checkbox.checked = event.target.checked; });
+      updatePdfImportSelection();
+      return;
+    }
+    if (event.target.classList.contains("import-row-checkbox")) updatePdfImportSelection();
   });
   els.importJsonInput.addEventListener("change", async () => {
     const [file] = els.importJsonInput.files;
