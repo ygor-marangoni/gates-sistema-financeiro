@@ -5,7 +5,8 @@
   "pages_build_output_dir": "./",
   "kv_namespaces": [
     {
-      "binding": "FINANCE_DATA"
+      "binding": "FINANCE_DATA",
+      "id": "a7557ff776bf46bea32bb89dd0acf2c3"
     }
   ]
 }
