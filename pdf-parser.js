@@ -25,6 +25,8 @@
     "SALDO DISPONIVEL", "LIMITE TOTAL", "LIMITE DISPONIVEL", "PAGAMENTO MINIMO",
     "VALOR TOTAL", "MELHOR DIA DE COMPRA", "ENCARGOS PREVISTOS", "RESUMO DA FATURA",
     "TOTAL FATURA", "TOTAL GERAL", "SUBTOTAL", "VALOR DA FATURA", "VALOR A PAGAR",
+    "TOTAL DE ENTRADAS", "TOTAL DE SAIDAS", "SALDO DO DIA", "SALDO FINAL DO PERIODO",
+    "SALDO TOTAL", "SALDO INICIAL", "VALOR SALDO POR TRANSACAO",
     "NEW BALANCE", "PREVIOUS BALANCE", "STATEMENT BALANCE", "AVAILABLE BALANCE",
     "CREDIT LIMIT", "AVAILABLE CREDIT", "MINIMUM PAYMENT", "AMOUNT DUE", "TOTAL PURCHASES"
   ];
@@ -86,7 +88,7 @@
     if (atStart) return atStart;
 
     const normalized = comparable(line);
-    const numericPattern = /(\d{1,2})\s*[\/.\-]\s*(\d{1,2})(?:\s*[\/.\-]\s*(\d{2,4}))\b/g;
+    const numericPattern = /(\d{1,2})\s*[\/.\-]\s*(\d{1,2})(?:\s*[\/.\-]\s*(\d{2}|\d{4}))\b/g;
     const textualPattern = /(\d{1,2})\s+(?:DE\s+)?([A-Z]{3,10})\.?(?:\s+(?:DE\s+)?(\d{4}))\b/g;
     const candidates = [
       ...[...normalized.matchAll(numericPattern)].map((match) => datePartsFromMatch(match, true)),
@@ -157,7 +159,7 @@
   function detectDocumentContext(allText, options = {}) {
     const text = comparable(allText);
     const invoiceScore = [
-      "FATURA", "PAGAMENTO MINIMO", "LIMITE", "MELHOR DIA DE COMPRA", "CARTAO DE CREDITO",
+      "PAGAMENTO MINIMO", "MELHOR DIA DE COMPRA", "CARTAO DE CREDITO",
       "VALOR DA FATURA", "DATA DE FECHAMENTO", "STATEMENT BALANCE", "MINIMUM PAYMENT",
       "CREDIT CARD", "CARD STATEMENT", "PAYMENT DUE"
     ]
@@ -168,10 +170,13 @@
       "WITHDRAWALS AND OTHER DEBITS"
     ]
       .filter((term) => text.includes(term)).length;
-    const documentType = invoiceScore >= 1 || text.includes("FATURA DO CARTAO")
-      ? "credit_card_invoice"
-      : statementScore >= 2 || text.includes("EXTRATO BANCARIO") || text.includes("STATEMENT OF ACCOUNT")
-        ? "bank_statement"
+    const explicitInvoice = /\b(?:FATURA (?:DO )?CARTAO|RESUMO DA FATURA)\b/.test(text);
+    const genericInvoice = /\bFATURA\b/.test(text) && statementScore < 2;
+    const dailyStatement = text.includes("SALDO DO DIA") && /\b(?:PIX|TRANSFERENCIA|TED|DEPOSITO)\b/.test(text);
+    const documentType = statementScore >= 2 || dailyStatement || text.includes("EXTRATO BANCARIO") || text.includes("STATEMENT OF ACCOUNT")
+      ? "bank_statement"
+      : invoiceScore >= 1 || explicitInvoice || genericInvoice
+        ? "credit_card_invoice"
         : "unknown";
     const dateOrder = /\b(?:STATEMENT OF ACCOUNT|ACCOUNT TRANSACTIONS|DEPOSITS AND OTHER CREDITS|CARD STATEMENT|PAYMENT DUE|DUE DATE)\b/.test(text)
       ? "mdy"
@@ -276,10 +281,18 @@
   function isSummaryLine(line, context = {}) {
     const normalized = comparable(line);
     if (SUMMARY_PHRASES.some((phrase) => normalized.includes(phrase))) return true;
+    if (normalized.includes("VALORES EM R$")) return true;
+    if (/^\d{1,2}\s+(?:DE\s+)?[A-Z]{3,10}(?:\s+DE)?\s+20\d{2}\s+A\s+\d{1,2}\s+(?:DE\s+)?[A-Z]{3,10}/.test(normalized)) return true;
     if (context.documentType === "credit_card_invoice" && /\bPAGAMENTO (?:DA )?FATURA\b/.test(normalized)) return true;
     if (context.documentType === "credit_card_invoice" && /\b(?:PAYMENT RECEIVED|PAYMENT THANK YOU|AUTOMATIC PAYMENT)\b/.test(normalized)) return true;
     if (/\bVENCIMENTO\b/.test(normalized) && !/\b(?:TARIFA|JUROS|MULTA)\b/.test(normalized)) return true;
     return false;
+  }
+
+  function isPeriodHeaderLine(line) {
+    const normalized = comparable(line);
+    return normalized.includes("VALORES EM R$")
+      || /^\d{1,2}\s+(?:DE\s+)?[A-Z]{3,10}(?:\s+DE)?\s+20\d{2}\s+A\s+\d{1,2}\s+(?:DE\s+)?[A-Z]{3,10}/.test(normalized);
   }
 
   function inferTransactionType(description, money, context = {}) {
@@ -287,12 +300,12 @@
     const creditWords = [
       "PIX RECEBIDO", "TRANSFERENCIA RECEBIDA", "TED RECEBIDA", "DEPOSITO", "SALARIO",
       "RENDIMENTO", "REEMBOLSO", "ESTORNO", "CREDITO", "RECEBIMENTO", "RESGATE",
-      "CASHBACK", "REFUND", "PAYROLL", "DIRECT DEPOSIT", "PREAUTHORIZED CREDIT",
+      "VALOR ADICIONADO", "CASHBACK", "REFUND", "PAYROLL", "DIRECT DEPOSIT", "PREAUTHORIZED CREDIT",
       "INTEREST CREDIT", "CREDIT ADJUSTMENT", "PAYMENT RECEIVED"
     ];
     const debitWords = [
       "PIX ENVIADO", "PAGAMENTO", "DEBITO", "BOLETO", "SAQUE", "TARIFA", "COMPRA",
-      "TRANSFERENCIA ENVIADA", "PAGTO", "PURCHASE", "WITHDRAWAL", "ATM ", "CHECK ",
+      "TRANSFERENCIA ENVIADA", "APLICACAO", "PAGTO", "PURCHASE", "WITHDRAWAL", "ATM ", "CHECK ",
       "SERVICE CHARGE", "FEE", "DIRECT DEBIT", "AUTOMATIC PAYMENT", "TAX"
     ];
     if (money.indicator === "C") return "income";
@@ -442,7 +455,11 @@
     const balance = headerXAny(row, ["SALDO", "BALANCE"]);
 
     if ([date, description, debit, credit, balance].every(Number.isFinite)) {
-      return { type: "bank", starts: [date, description, debit, credit, balance] };
+      return {
+        type: "bank",
+        starts: [date, description, debit, credit, balance].sort((a, b) => a - b),
+        columns: { date, description, debit, credit, balance }
+      };
     }
     if ([date, description, category, account, amount].every(Number.isFinite)) {
       return { type: "gates", starts: [date, description, category, account, amount] };
@@ -459,6 +476,20 @@
     let page = null;
     let table = null;
     let foundTable = false;
+    let bankDate = "";
+    let bankDescription = "";
+
+    function bankColumn(row, name) {
+      const orderedColumns = Object.entries(table.columns).sort((a, b) => a[1] - b[1]);
+      const columnIndex = orderedColumns.findIndex(([key]) => key === name);
+      const previous = orderedColumns[columnIndex - 1]?.[1];
+      const current = orderedColumns[columnIndex][1];
+      const next = orderedColumns[columnIndex + 1]?.[1];
+      const monetary = ["debit", "credit", "balance"].includes(name);
+      const start = monetary ? current - 14 : Number.isFinite(previous) ? (previous + current) / 2 : -Infinity;
+      const end = Number.isFinite(next) ? (current + next) / 2 : Infinity;
+      return textInColumn(row, start, end);
+    }
 
     for (const row of ordered) {
       if (row.page !== page) {
@@ -492,7 +523,27 @@
         table = null;
         continue;
       }
-      if (!table || !datePartsInTransaction(row.text)) continue;
+      if (!table) continue;
+
+      if (table.type === "bank") {
+        const date = bankColumn(row, "date");
+        const description = bankColumn(row, "description");
+        const debit = bankColumn(row, "debit");
+        const credit = bankColumn(row, "credit");
+        if (datePartsInTransaction(date)) bankDate = date;
+        const usefulDescription = description && !/^\d{4,}$/.test(description) ? description : "";
+        if (usefulDescription) bankDescription = usefulDescription;
+        const amount = debit || credit;
+        if (!bankDate || !amount || !parseMoneyAtEnd(amount)) continue;
+        normalized.push({
+          ...row,
+          text: cleanDescription(`${bankDate} ${bankDescription || usefulDescription || "Movimentacao"} ${normalizeOcrColumnAmount(amount)} ${debit ? "D" : "C"}`)
+        });
+        bankDescription = "";
+        continue;
+      }
+
+      if (!datePartsInTransaction(row.text)) continue;
 
       if (table.type === "simple") {
         const [dateStart, descriptionStart, amountStart, tableEnd] = table.boundaries;
@@ -526,14 +577,6 @@
         continue;
       }
 
-      const debit = textInColumn(row, thirdStart, fourthStart);
-      const credit = textInColumn(row, fourthStart, fifthStart);
-      const amount = debit || credit;
-      if (!amount) continue;
-      normalized.push({
-        ...row,
-        text: cleanDescription(`${date} ${description} ${normalizeOcrColumnAmount(amount)} ${credit ? "C" : "D"}`)
-      });
     }
 
     return foundTable ? normalized : rows;
@@ -564,6 +607,28 @@
       combined.push({ ...row, text: cleanDescription(text) });
     }
     return combined;
+  }
+
+  function looksLikeUndatedTransaction(line, context = {}) {
+    const normalized = comparable(line);
+    if (!parseMoneyAtEnd(line, context) || isSummaryLine(line, context)) return false;
+    if (/\b(?:CPF|CNPJ|AGENCIA|OUVIDORIA|ATENDIMENTO|PAGINA|PAGE|PROTOCOLO)\b/.test(normalized)) return false;
+    return /\b(?:PIX|TRANSFERENCIA|TED|DOC|DEPOSITO|SALARIO|RENDIMENTO|REEMBOLSO|ESTORNO|RESGATE|APLICACAO|PAGAMENTO|BOLETO|COMPRA|DEBITO|CREDITO|SAQUE|TARIFA|RECARGA|VALOR ADICIONADO|PURCHASE|PAYMENT|WITHDRAWAL|CHECK|FEE|CHARGE)\b/.test(normalized)
+      || /(?:^|\s)[+-]\s*(?:R\$|US\$|BRL|USD|EUR|\d)/i.test(line)
+      || /\s(?:CR|DR|C|D)\s*$/i.test(line);
+  }
+
+  function rowsWithInheritedDates(rows, context = {}) {
+    const ordered = [...(rows || [])].sort((a, b) => a.page - b.page || b.y - a.y);
+    const result = [];
+    let currentDate = "";
+    for (const row of ordered) {
+      const date = datePartsAtStart(row.text);
+      if (date && !isPeriodHeaderLine(row.text)) currentDate = date.raw;
+      if (date || !currentDate || !looksLikeUndatedTransaction(row.text, context)) continue;
+      result.push({ ...row, text: cleanDescription(`${currentDate} ${row.text}`) });
+    }
+    return result;
   }
 
   function fingerprintDescription(description) {
@@ -628,9 +693,14 @@
   function parseDocumentRows(rows, fileName, existingItems = [], options = {}) {
     const allText = (rows || []).map((row) => row.text).join("\n");
     const context = detectDocumentContext(allText, options);
-    const transactions = combineContinuationLines(normalizeStructuredTableRows(rows))
+    const structuredRows = normalizeStructuredTableRows(rows);
+    const directTransactions = combineContinuationLines(structuredRows)
       .map((row) => parseStatementLine(row, fileName, context))
       .filter(Boolean);
+    const inheritedTransactions = rowsWithInheritedDates(rows, context)
+      .map((row) => parseStatementLine(row, fileName, context))
+      .filter(Boolean);
+    const transactions = [...directTransactions, ...inheritedTransactions];
     return { context, transactions: markDuplicates(transactions, existingItems) };
   }
 
@@ -651,6 +721,7 @@
     parseStatementDate,
     parseStatementLine,
     resolveCategory,
+    rowsWithInheritedDates,
     transactionFingerprint
   };
 });

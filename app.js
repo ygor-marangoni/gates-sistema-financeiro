@@ -1,6 +1,5 @@
 "use strict";
 
-const DATA_URL = "data/financeiro.json";
 const STORAGE_KEY = "gates_financeiro_state_v1";
 const PDFJS_VERSION = "3.11.174";
 const PDF_MAX_FILE_SIZE = 20 * 1024 * 1024;
@@ -497,25 +496,7 @@ function normalizeGoal(item) {
 
 async function loadData() {
   const persisted = loadPersistedState();
-  if (persisted) {
-    app.state = persisted;
-    return;
-  }
-
-  try {
-    const response = await fetch(DATA_URL, { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json();
-    if (payload && typeof payload === "object" && Object.keys(payload).length) {
-      app.state = normalizeState(payload);
-      await saveState({ sync: false });
-      return;
-    }
-  } catch {
-    // The optional initial JSON is intentionally absent in a fresh installation.
-  }
-
-  app.state = seedState();
+  app.state = persisted || seedState();
 }
 
 function loadPersistedState() {
@@ -3194,6 +3175,23 @@ function pdfImportErrorMessage(code) {
   }[code] || "Não foi possível processar o PDF.";
 }
 
+function pdfCategoryOptions(type, selectedCategory = "", description = "", categoryLabel = "") {
+  const categories = categoriesForType(type);
+  const importedCategory = categories.find((category) => (
+    window.GatesPdfParser.comparable(category.id) === window.GatesPdfParser.comparable(categoryLabel)
+    || window.GatesPdfParser.comparable(category.label) === window.GatesPdfParser.comparable(categoryLabel)
+  ));
+  const suggested = selectedCategory
+    || importedCategory?.id
+    || window.GatesPdfParser.resolveCategory(app.state.categories, type, description, false);
+  return [
+    `<option value="" ${suggested ? "" : "selected"}>Sem categoria</option>`,
+    ...categories.map((category) => (
+      `<option value="${escapeHTML(category.id)}" ${category.id === suggested ? "selected" : ""}>${escapeHTML(category.label)}</option>`
+    ))
+  ].join("");
+}
+
 function renderPdfImportPreview(file, transactions, errorCode = "") {
   app.pendingImport = { type: "pdf", transactions };
   const selectable = transactions.filter((item) => !item.duplicate).length;
@@ -3236,9 +3234,15 @@ function renderPdfImportPreview(file, transactions, errorCode = "") {
             </div>
             <label class="import-preview-type">
               <span>Tipo</span>
-              <select aria-label="Tipo do lançamento importado">
+              <select class="import-preview-type-select" aria-label="Tipo do lançamento importado">
                 <option value="expense" ${item.type === "expense" ? "selected" : ""}>Saída</option>
                 <option value="income" ${item.type === "income" ? "selected" : ""}>Entrada</option>
+              </select>
+            </label>
+            <label class="import-preview-category-field">
+              <span>Categoria</span>
+              <select class="import-preview-category" aria-label="Categoria do lançamento importado">
+                ${pdfCategoryOptions(item.type, item.category, item.description, item.categoryLabel)}
               </select>
             </label>
             <div class="import-preview-amount"><span>Valor</span><strong>${brl(item.amount)}</strong></div>
@@ -3325,19 +3329,13 @@ async function confirmPreparedImport() {
   try {
     const stagedCategories = cloneCategories(app.state.categories);
     const selectedItems = selectedRows.map(({ row, source }) => {
-      const type = row.querySelector("select").value;
+      const type = row.querySelector(".import-preview-type-select").value;
       const description = row.querySelector('.import-preview-copy input').value.trim();
       if (!description) return null;
-      const preferredCategory = stagedCategories[type].find((category) => (
-        window.GatesPdfParser.comparable(category.label) === window.GatesPdfParser.comparable(source.categoryLabel)
-        || window.GatesPdfParser.comparable(category.id) === window.GatesPdfParser.comparable(source.categoryLabel)
-      ));
-      const category = preferredCategory?.id || window.GatesPdfParser.resolveCategory(
-          stagedCategories,
-          type,
-          description,
-          true
-        );
+      const selectedCategory = row.querySelector(".import-preview-category").value;
+      const category = stagedCategories[type].some((item) => item.id === selectedCategory)
+        ? selectedCategory
+        : "";
       return normalizeTransaction({
         ...source,
         type,
@@ -3592,6 +3590,13 @@ function bindEvents() {
       els.importBody.querySelectorAll(".import-row-checkbox:not(:disabled)")
         .forEach((checkbox) => { checkbox.checked = event.target.checked; });
       updatePdfImportSelection();
+      return;
+    }
+    if (event.target.classList.contains("import-preview-type-select")) {
+      const row = event.target.closest("[data-import-index]");
+      const categorySelect = row.querySelector(".import-preview-category");
+      const description = row.querySelector(".import-preview-copy input").value.trim();
+      categorySelect.innerHTML = pdfCategoryOptions(event.target.value, "", description);
       return;
     }
     if (event.target.classList.contains("import-row-checkbox")) updatePdfImportSelection();

@@ -7,7 +7,7 @@ O Gates é uma aplicação estática, sem login, autenticação, conta de usuár
 - O estado financeiro completo é salvo no `localStorage` do navegador.
 - Cada navegador e domínio possui seu próprio armazenamento; visitantes diferentes não compartilham dados.
 - Uma instalação nova começa vazia.
-- O arquivo opcional `data/financeiro.json` só é lido como carga inicial quando ainda não existe estado local.
+- Nenhum arquivo do repositório é usado como carga inicial: o primeiro acesso sempre começa vazio.
 - `data/financeiro.json` fica ignorado pelo Git para impedir a publicação acidental de informações pessoais.
 
 ## Importação e exportação

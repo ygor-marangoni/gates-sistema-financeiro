@@ -6,7 +6,7 @@
 
 Abra `index.html` no navegador ou acesse a pasta pelo mesmo servidor estático usado pelo projeto principal.
 
-Os dados ficam no `localStorage` do próprio navegador, sem conta, login ou backend. Se `data/financeiro.json` existir, ele serve apenas como carga inicial quando ainda não houver dados locais. Uma instalação nova começa vazia. Para levar lançamentos, categorias, contas, orçamentos e metas a outro navegador, use **Exportar** e depois **Importar > Backup JSON**.
+Os dados ficam no `localStorage` do próprio navegador, sem conta, login ou backend. Uma instalação nova sempre começa vazia. Para levar lançamentos, categorias, contas, orçamentos e metas a outro navegador, use **Exportar** e depois **Importar > Backup JSON**.
 
 ## Recursos
 

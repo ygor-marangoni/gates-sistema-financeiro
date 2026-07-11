@@ -318,3 +318,58 @@ test("tabela simples de fatura aceita Data, Estabelecimento e Valor", () => {
   assert.equal(result.transactions[0].description, "Mercado Central");
   assert.equal(result.transactions[0].amount, 186.42);
 });
+
+test("Nubank herda a data do bloco e ignora totais diarios", () => {
+  const rows = [
+    { page: 1, y: 800, text: "03 JUN 2026 Total de entradas + 1.409,54", items: [] },
+    { page: 1, y: 780, text: "Transferência recebida pelo Pix JULIANNE 1.178,20", items: [] },
+    { page: 1, y: 760, text: "Resgate RDB 231,34", items: [] },
+    { page: 1, y: 740, text: "Total de saídas - 251,29", items: [] },
+    { page: 1, y: 720, text: "Pagamento de fatura 231,29", items: [] },
+    { page: 1, y: 700, text: "Transferência enviada pelo Pix BRUNA 20,00", items: [] }
+  ];
+  const result = parser.parseDocumentRows(rows, "nubank.pdf", [], { fallbackYear: 2026 });
+  assert.equal(result.context.documentType, "bank_statement");
+  assert.equal(result.transactions.length, 4);
+  assert.deepEqual(result.transactions.map((item) => item.amount), [1178.2, 231.34, 231.29, 20]);
+  assert.deepEqual(result.transactions.map((item) => item.type), ["income", "income", "expense", "expense"]);
+  assert.ok(result.transactions.every((item) => item.date === "2026-06-03"));
+});
+
+test("Inter usa o valor da movimentação antes do saldo", () => {
+  const rows = [
+    { page: 1, y: 800, text: "11 de Junho de 2026 Saldo do dia: R$ 4.590,19", items: [] },
+    { page: 1, y: 780, text: 'Pix enviado: "CEMIG DISTRIBUICAO SA" -R$ 124,74 R$ 4.590,19', items: [] },
+    { page: 1, y: 760, text: 'Pix recebido: "CLIENTE" R$ 950,00 R$ 5.540,19', items: [] }
+  ];
+  const result = parser.parseDocumentRows(rows, "inter.pdf", [], { fallbackYear: 2026 });
+  assert.equal(result.context.documentType, "bank_statement");
+  assert.deepEqual(result.transactions.map((item) => item.amount), [124.74, 950]);
+  assert.deepEqual(result.transactions.map((item) => item.type), ["expense", "income"]);
+});
+
+test("Bradesco associa histórico anterior às colunas de crédito e débito", () => {
+  const rows = [
+    {
+      page: 1, y: 900, text: "Data Histórico Docto. Crédito (R$) Débito (R$) Saldo (R$)",
+      items: [
+        { text: "Data", x: 46 }, { text: "Histórico", x: 110 }, { text: "Crédito", x: 385 },
+        { text: "Débito", x: 452 }, { text: "Saldo", x: 520 }
+      ]
+    },
+    { page: 1, y: 880, text: "PIX RECEBIDO", items: [{ text: "PIX", x: 110 }, { text: "RECEBIDO", x: 125 }] },
+    {
+      page: 1, y: 870, text: "01/06/2026 2007377 16,00 16,00",
+      items: [{ text: "01/06/2026", x: 46 }, { text: "2007377", x: 303 }, { text: "16,00", x: 409 }, { text: "16,00", x: 533 }]
+    },
+    { page: 1, y: 850, text: "PIX ENVIADO", items: [{ text: "PIX", x: 110 }, { text: "ENVIADO", x: 125 }] },
+    {
+      page: 1, y: 840, text: "2008079 16,00 0,00",
+      items: [{ text: "2008079", x: 303 }, { text: "16,00", x: 473 }, { text: "0,00", x: 537 }]
+    }
+  ];
+  const result = parser.parseDocumentRows(rows, "bradesco.pdf", [], { fallbackYear: 2026 });
+  assert.equal(result.transactions.length, 2);
+  assert.deepEqual(result.transactions.map((item) => item.description), ["PIX RECEBIDO", "PIX ENVIADO"]);
+  assert.deepEqual(result.transactions.map((item) => item.type), ["income", "expense"]);
+});
