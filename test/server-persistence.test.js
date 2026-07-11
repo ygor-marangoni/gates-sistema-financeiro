@@ -11,7 +11,7 @@ function waitForServer(child) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error("Servidor local não iniciou a tempo.")), 8000);
     child.stdout.on("data", (chunk) => {
-      if (!String(chunk).includes("http://localhost")) return;
+      if (!String(chunk).includes("http://127.0.0.1")) return;
       clearTimeout(timeout);
       resolve();
     });
@@ -37,6 +37,22 @@ test("API local grava e recupera o estado no JSON configurado", async (context) 
   });
 
   await waitForServer(child);
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const unauthenticated = await fetch(`${baseUrl}/api/data`);
+  assert.equal(unauthenticated.status, 401);
+
+  const sessionResponse = await fetch(`${baseUrl}/api/auth/session`);
+  assert.equal(sessionResponse.status, 200);
+  const session = await sessionResponse.json();
+  const cookie = sessionResponse.headers.get("set-cookie")?.split(";", 1)[0];
+  assert.equal(session.authenticated, true);
+  assert.equal(session.user.id, "local-user");
+  assert.equal(typeof session.csrfToken, "string");
+  assert.ok(session.csrfToken.length >= 32);
+  assert.ok(cookie?.startsWith("gates_local_session="));
+  assert.match(sessionResponse.headers.get("set-cookie"), /HttpOnly/i);
+  assert.match(sessionResponse.headers.get("set-cookie"), /SameSite=Strict/i);
+
   const payload = {
     version: 1,
     accounts: ["Conta de teste"],
@@ -54,14 +70,68 @@ test("API local grava e recupera o estado no JSON configurado", async (context) 
     }]
   };
 
-  const put = await fetch(`http://127.0.0.1:${port}/api/data`, {
+  const withoutSession = await fetch(`${baseUrl}/api/data`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Origin: baseUrl,
+      "X-CSRF-Token": session.csrfToken
+    },
+    body: JSON.stringify(payload)
+  });
+  assert.equal(withoutSession.status, 401);
+
+  const externalOrigin = await fetch(`${baseUrl}/api/data`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: cookie,
+      Origin: "https://example.invalid",
+      "X-CSRF-Token": session.csrfToken
+    },
+    body: JSON.stringify(payload)
+  });
+  assert.equal(externalOrigin.status, 403);
+
+  const missingCsrf = await fetch(`${baseUrl}/api/data`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: cookie,
+      Origin: baseUrl
+    },
+    body: JSON.stringify(payload)
+  });
+  assert.equal(missingCsrf.status, 403);
+
+  const put = await fetch(`${baseUrl}/api/data`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: cookie,
+      Origin: baseUrl,
+      "X-CSRF-Token": session.csrfToken
+    },
     body: JSON.stringify(payload)
   });
   assert.equal(put.status, 200);
 
-  const get = await fetch(`http://127.0.0.1:${port}/api/data`);
+  const get = await fetch(`${baseUrl}/api/data`, { headers: { Cookie: cookie } });
   assert.deepEqual(await get.json(), payload);
   assert.deepEqual(JSON.parse(await fs.readFile(dataPath, "utf8")), payload);
+
+  const logout = await fetch(`${baseUrl}/api/auth/logout`, {
+    method: "POST",
+    headers: {
+      Cookie: cookie,
+      Origin: baseUrl,
+      "X-CSRF-Token": session.csrfToken
+    }
+  });
+  assert.equal(logout.status, 204);
+  assert.match(logout.headers.get("set-cookie"), /gates_local_session=;.*Max-Age=0/i);
+
+  const googleStart = await fetch(`${baseUrl}/api/auth/google/start`, { redirect: "manual" });
+  assert.equal(googleStart.status, 302);
+  assert.equal(googleStart.headers.get("location"), "/");
 });

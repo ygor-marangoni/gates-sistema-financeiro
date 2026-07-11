@@ -1,6 +1,5 @@
 "use strict";
 
-const DATA_URL = "data/financeiro.json";
 const DATA_API_URL = "/api/data";
 const STORAGE_KEY = "gates_financeiro_state_v1";
 const DATA_SNAPSHOT_KEY = "gates_financeiro_data_snapshot_v1";
@@ -19,6 +18,7 @@ let remoteSyncDisabled = false;
 let remoteSaveTimer = null;
 let pendingRemotePayload = null;
 let pendingRemoteResolvers = [];
+let remoteSaveAbortController = null;
 
 const DEFAULT_CATEGORIES = { income: [], expense: [] };
 
@@ -46,11 +46,23 @@ const CATEGORY_ICON_NAMES = [
 ];
 const LUCIDE_ICON_NAMES = new Set([
   ...CATEGORY_ICON_NAMES,
-  "arrow-up", "check", "circle-plus", "file-json", "file-text", "flag", "history", "pencil", "plus", "rocket", "sparkles", "trash-2", "trending-up", "upload", "x"
+  "arrow-up", "check", "circle-plus", "file-json", "file-text", "flag", "history", "log-out", "pencil", "plus", "rocket", "sparkles", "trash-2", "trending-up", "upload", "x"
 ]);
 const DEFAULT_CATEGORY_ICON_BY_ID = {};
 
 const els = {
+  appShell: document.getElementById("appShell"),
+  sessionGate: document.getElementById("sessionGate"),
+  sessionGateStatus: document.getElementById("sessionGateStatus"),
+  sessionGateMessage: document.getElementById("sessionGateMessage"),
+  sessionError: document.getElementById("sessionError"),
+  btnGoogleLogin: document.getElementById("btnGoogleLogin"),
+  btnSessionRetry: document.getElementById("btnSessionRetry"),
+  sessionSummary: document.getElementById("sessionSummary"),
+  sessionAvatar: document.getElementById("sessionAvatar"),
+  sessionName: document.getElementById("sessionName"),
+  sessionEmail: document.getElementById("sessionEmail"),
+  btnLogout: document.getElementById("btnLogout"),
   sidebar: document.getElementById("sidebar"),
   sidebarOverlay: document.getElementById("sidebarOverlay"),
   hamburgerBtn: document.getElementById("hamburgerBtn"),
@@ -175,6 +187,9 @@ const els = {
 
 const app = {
   state: seedState(),
+  session: null,
+  initialized: false,
+  sessionLoading: false,
   currentView: "overview",
   currentType: "income",
   chartRange: "30d",
@@ -505,19 +520,27 @@ function normalizeGoal(item) {
 
 async function loadData() {
   const persisted = loadPersistedState();
-  let remoteAvailable = false;
-
   try {
-    const response = await fetch(DATA_API_URL, { cache: "no-store" });
+    const response = await fetch(DATA_API_URL, {
+      cache: "no-store",
+      credentials: "same-origin"
+    });
+    if (response.status === 401) {
+      window.GatesAuth?.expire();
+      throw new Error("AUTH_REQUIRED");
+    }
     if (response.ok) {
       const payload = await response.json();
-      remoteAvailable = true;
       if (payload && typeof payload === "object" && Object.keys(payload).length) {
         app.state = normalizeState(payload);
         await saveState({ sync: false });
         saveDataSnapshot(dataSnapshot(payload));
         return;
       }
+
+      app.state = persisted || seedState();
+      await saveState({ sync: true });
+      return;
     }
     if (response.status === 503) {
       remoteSyncDisabled = true;
@@ -526,29 +549,16 @@ async function loadData() {
         showToast("Base de dados remota indisponível. As alterações ficarão neste dispositivo.");
       }
     }
-  } catch {
-    // The API is optional during static development; continue with local data.
-  }
-
-  try {
-    const response = await fetch(DATA_URL, { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json();
-    const snapshot = dataSnapshot(payload);
-    const previousSnapshot = loadDataSnapshot();
-
-    if (!persisted || snapshot !== previousSnapshot) {
-      app.state = normalizeState(payload);
-      saveDataSnapshot(snapshot);
-      await saveState({ sync: remoteAvailable });
-      return;
+    if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+      throw new Error("DATA_ACCESS_DENIED");
     }
-  } catch {
-    // The data file is optional in production; local state remains the fallback.
+  } catch (error) {
+    if (["AUTH_REQUIRED", "DATA_ACCESS_DENIED"].includes(error?.message)) throw error;
+    // Keep the authenticated user's scoped cache during transient network failures.
   }
 
   app.state = persisted || seedState();
-  await saveState({ sync: remoteAvailable });
+  await saveState({ sync: false });
 }
 
 function dataSnapshot(payload) {
@@ -561,9 +571,15 @@ function dataSnapshot(payload) {
   return `${source.length}-${(hash >>> 0).toString(16)}`;
 }
 
+function scopedStorageKey(baseKey) {
+  const userKey = String(app.session?.user?.id || "").trim();
+  return userKey ? `${baseKey}:${userKey}` : "";
+}
+
 function loadDataSnapshot() {
   try {
-    return localStorage.getItem(DATA_SNAPSHOT_KEY) || "";
+    const key = scopedStorageKey(DATA_SNAPSHOT_KEY);
+    return key ? localStorage.getItem(key) || "" : "";
   } catch {
     return "";
   }
@@ -571,7 +587,8 @@ function loadDataSnapshot() {
 
 function saveDataSnapshot(snapshot) {
   try {
-    localStorage.setItem(DATA_SNAPSHOT_KEY, snapshot);
+    const key = scopedStorageKey(DATA_SNAPSHOT_KEY);
+    if (key) localStorage.setItem(key, snapshot);
   } catch {
     // Persistence can be unavailable in private browsing; loaded data still works.
   }
@@ -579,7 +596,9 @@ function saveDataSnapshot(snapshot) {
 
 function loadPersistedState() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const key = scopedStorageKey(STORAGE_KEY);
+    if (!key) return null;
+    const raw = localStorage.getItem(key);
     if (!raw) return null;
     return normalizeState(JSON.parse(raw));
   } catch {
@@ -593,7 +612,17 @@ function saveState({ sync = true, strict = false } = {}) {
     updatedAt: new Date().toISOString(),
     ...app.state
   };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  const key = scopedStorageKey(STORAGE_KEY);
+  if (!key) {
+    return strict
+      ? Promise.reject(new Error("AUTH_REQUIRED"))
+      : Promise.resolve({ remote: false });
+  }
+  try {
+    localStorage.setItem(key, JSON.stringify(payload));
+  } catch {
+    // Private browsing may disable local persistence; remote sync still proceeds.
+  }
   if (!sync) return Promise.resolve({ remote: false });
   if (remoteSyncDisabled) {
     return strict
@@ -618,7 +647,7 @@ function queueRemoteSave(payload, { strict = false } = {}) {
         performRemoteSave(latestPayload).then((result) => {
           resolvers.forEach((settle) => settle(result));
         });
-      }, 450);
+      }, 1200);
     });
   }
 
@@ -639,11 +668,18 @@ function performRemoteSave(payload, { strict = false } = {}) {
   const operation = remoteSaveChain
     .catch(() => undefined)
     .then(async () => {
+      remoteSaveAbortController = new AbortController();
       const response = await fetch(DATA_API_URL, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": window.GatesAuth?.csrfToken() || ""
+        },
+        body: JSON.stringify(payload),
+        signal: remoteSaveAbortController.signal
       });
+      remoteSaveAbortController = null;
       if (!response.ok) {
         const error = new Error(`HTTP ${response.status}`);
         error.status = response.status;
@@ -653,6 +689,12 @@ function performRemoteSave(payload, { strict = false } = {}) {
       return { remote: true };
     });
   remoteSaveChain = operation.catch((error) => {
+    remoteSaveAbortController = null;
+    if (error?.name === "AbortError") return { remote: false };
+    if (error?.status === 401 || error?.status === 403) {
+      handleSessionExpired();
+      return { remote: false };
+    }
     if (error?.status === 503) remoteSyncDisabled = true;
     if (!strict && !remoteSyncWarned && window.location.protocol !== "file:") {
       remoteSyncWarned = true;
@@ -661,6 +703,18 @@ function performRemoteSave(payload, { strict = false } = {}) {
     return { remote: false };
   });
   return strict ? operation : remoteSaveChain;
+}
+
+function cancelPendingRemoteSaves() {
+  if (remoteSaveTimer) window.clearTimeout(remoteSaveTimer);
+  remoteSaveTimer = null;
+  pendingRemotePayload = null;
+  pendingRemoteResolvers.splice(0).forEach((resolve) => resolve({ remote: false }));
+  remoteSaveAbortController?.abort();
+  remoteSaveAbortController = null;
+  remoteSaveChain = Promise.resolve();
+  remoteSyncDisabled = false;
+  remoteSyncWarned = false;
 }
 
 function exportPayload() {
@@ -2878,6 +2932,154 @@ function showNextToast() {
   }, 2800);
 }
 
+function setSessionGate({ state = "loading", status, message = "", error = "", login = false, retry = false }) {
+  document.body.dataset.sessionState = state;
+  els.appShell?.classList.add("hidden");
+  els.appShell?.setAttribute("aria-hidden", "true");
+  if (els.appShell) els.appShell.inert = true;
+  els.sessionGate?.classList.remove("hidden");
+  els.sessionGate?.setAttribute("aria-hidden", "false");
+  els.sessionGate?.setAttribute("aria-busy", String(["loading", "authenticating", "loading-data"].includes(state)));
+  if (els.sessionGateStatus) els.sessionGateStatus.textContent = status;
+  if (els.sessionGateMessage) els.sessionGateMessage.textContent = message;
+  if (els.sessionError) {
+    els.sessionError.textContent = error;
+    els.sessionError.classList.toggle("hidden", !error);
+  }
+  els.btnGoogleLogin?.classList.toggle("hidden", !login);
+  els.btnSessionRetry?.classList.toggle("hidden", !retry);
+  const focusTarget = login
+    ? els.btnGoogleLogin
+    : retry
+      ? els.btnSessionRetry
+      : els.sessionGateStatus;
+  window.requestAnimationFrame(() => focusTarget?.focus({ preventScroll: true }));
+}
+
+function authRedirectError() {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get("auth_error") || (params.get("auth") === "error" ? params.get("reason") : "");
+  if (!code) return "";
+  const messages = {
+    access_denied: "O acesso com Google foi cancelado.",
+    configuration: "O login com Google ainda não foi configurado.",
+    invalid_callback: "Não foi possível validar o retorno do Google.",
+    token_exchange: "Não foi possível concluir o acesso com Google."
+  };
+  return messages[code] || "Não foi possível concluir o acesso com Google.";
+}
+
+function clearAuthQuery() {
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has("auth") && !url.searchParams.has("auth_error")) return;
+  url.searchParams.delete("auth");
+  url.searchParams.delete("auth_error");
+  url.searchParams.delete("reason");
+  window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
+function showSignedOut(message = "Entre com sua conta Google para acessar seus dados financeiros.") {
+  const redirectError = authRedirectError();
+  setSessionGate({
+    state: "signed-out",
+    status: "Acesse o Gates",
+    message,
+    error: redirectError,
+    login: true,
+    retry: false
+  });
+}
+
+function renderSessionUser() {
+  const user = app.session?.user;
+  if (!user) {
+    els.sessionSummary?.classList.add("hidden");
+    return;
+  }
+  const name = String(user.name || "Conta Google").trim();
+  if (els.sessionAvatar) {
+    els.sessionAvatar.src = /^https:\/\//.test(user.picture || "") ? user.picture : "favicon.svg";
+    els.sessionAvatar.alt = user.picture ? `Foto de ${name}` : "";
+  }
+  if (els.sessionName) els.sessionName.textContent = name;
+  if (els.sessionEmail) els.sessionEmail.textContent = String(user.email || "");
+  els.sessionSummary?.classList.remove("hidden");
+  els.btnLogout?.classList.toggle("hidden", Boolean(user.local));
+  els.sessionSummary?.classList.toggle("without-logout", Boolean(user.local));
+}
+
+function revealApplication() {
+  document.body.dataset.sessionState = "ready";
+  els.sessionGate?.classList.add("hidden");
+  els.sessionGate?.setAttribute("aria-hidden", "true");
+  els.appShell?.classList.remove("hidden");
+  els.appShell?.setAttribute("aria-hidden", "false");
+  if (els.appShell) els.appShell.inert = false;
+  els.topbarTitle?.setAttribute("tabindex", "-1");
+  window.requestAnimationFrame(() => els.topbarTitle?.focus({ preventScroll: true }));
+}
+
+function resetSensitiveState() {
+  cancelPendingRemoteSaves();
+  Object.values(app.charts).forEach((chart) => chart?.destroy?.());
+  app.charts.cashflow = null;
+  app.charts.category = null;
+  app.state = seedState();
+  app.session = null;
+  app.pendingImport = null;
+  app.editingTransactionId = null;
+  app.editingGoalId = null;
+  app.editingCategoryId = null;
+  app.toastQueue = [];
+  els.toastContainer?.replaceChildren();
+  app.toastVisible = false;
+  els.sessionSummary?.classList.add("hidden");
+}
+
+function handleSessionExpired() {
+  window.GatesAuth?.expire();
+  resetSensitiveState();
+  showSignedOut("Sua sessão expirou. Entre novamente para continuar.");
+}
+
+async function performLogout() {
+  els.btnLogout?.setAttribute("disabled", "");
+  cancelPendingRemoteSaves();
+  try {
+    await window.GatesAuth?.logout();
+    resetSensitiveState();
+    clearAuthQuery();
+    showSignedOut();
+  } catch {
+    showToast("Não foi possível sair agora. Tente novamente.");
+  } finally {
+    els.btnLogout?.removeAttribute("disabled");
+  }
+}
+
+function bindSessionEvents() {
+  els.btnGoogleLogin?.addEventListener("click", () => {
+    els.btnGoogleLogin.disabled = true;
+    setSessionGate({
+      state: "authenticating",
+      status: "Abrindo o Google",
+      message: "Conclua o acesso para entrar no Gates."
+    });
+    window.GatesAuth?.login();
+  });
+  els.btnSessionRetry?.addEventListener("click", () => startSession());
+  els.btnLogout?.addEventListener("click", () => {
+    openConfirmDialog({
+      title: "Sair do Gates?",
+      message: "Seus dados continuarão salvos na sua conta e neste navegador.",
+      confirmLabel: "Sair",
+      tone: "neutral",
+      icon: "log-out",
+      action: performLogout
+    });
+  });
+}
+
 function openSidebar() {
   els.sidebar.classList.add("open");
   els.sidebarOverlay.classList.add("visible");
@@ -3716,16 +3918,73 @@ function bindEvents() {
   });
 }
 
+async function startSession() {
+  if (app.sessionLoading) return;
+  app.sessionLoading = true;
+  els.btnSessionRetry?.setAttribute("disabled", "");
+  setSessionGate({
+    state: "loading",
+    status: "Carregando",
+    message: "Verificando sua sessão..."
+  });
+
+  try {
+    if (!window.GatesAuth) throw new Error("SESSION_UNAVAILABLE");
+    const session = await window.GatesAuth.getSession();
+    if (!session) {
+      resetSensitiveState();
+      showSignedOut();
+      return;
+    }
+
+    app.session = session;
+    renderSessionUser();
+    setSessionGate({
+      state: "loading-data",
+      status: "Preparando suas finanças",
+      message: "Carregando os dados da sua conta..."
+    });
+    await loadData();
+
+    app.currentView = app.state.currentView || "overview";
+    app.chartRange = app.state.chartRange || "30d";
+    app.categoryChartType = app.state.categoryChartType || "expense";
+    if (!app.initialized) {
+      bindEvents();
+      initCustomFormControls();
+      app.initialized = true;
+    }
+    resetTransactionForm();
+    resetCategoryForm();
+    renderAll();
+    renderSessionUser();
+    clearAuthQuery();
+    revealApplication();
+  } catch (error) {
+    if (error?.message === "AUTH_REQUIRED" || error?.status === 401) {
+      handleSessionExpired();
+      return;
+    }
+    resetSensitiveState();
+    setSessionGate({
+      state: "error",
+      status: "Não foi possível carregar o Gates",
+      message: "Verifique sua conexão e tente novamente.",
+      error: "A sessão ou o armazenamento não responderam.",
+      retry: true
+    });
+  } finally {
+    app.sessionLoading = false;
+    els.btnSessionRetry?.removeAttribute("disabled");
+    if (document.body.dataset.sessionState === "signed-out") {
+      els.btnGoogleLogin?.removeAttribute("disabled");
+    }
+  }
+}
+
 async function init() {
-  bindEvents();
-  await loadData();
-  app.currentView = app.state.currentView || "overview";
-  app.chartRange = app.state.chartRange || "30d";
-  app.categoryChartType = app.state.categoryChartType || "expense";
-  resetTransactionForm();
-  resetCategoryForm();
-  renderAll();
-  initCustomFormControls();
+  bindSessionEvents();
+  await startSession();
 }
 
 init();

@@ -4,6 +4,8 @@ data/financeiro.json
 # Dependencies
 node_modules/
 .wrangler/
+.dev.vars*
+.env*
 tmp/
 *.traineddata
 /dummy_statement.pdf

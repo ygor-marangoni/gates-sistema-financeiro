@@ -1,64 +1,35 @@
-const DATA_KEY = "financeiro";
+import { onRequest as handleData } from "./functions/api/data.js";
+import { onRequestGet as startGoogleLogin } from "./functions/api/auth/google/start.js";
+import { onRequestGet as finishGoogleLogin } from "./functions/api/auth/google/callback.js";
+import { onRequestGet as handleSession } from "./functions/api/auth/session.js";
+import { onRequestPost as handleLogout } from "./functions/api/auth/logout.js";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "Content-Type",
-  "Access-Control-Allow-Methods": "GET, PUT, OPTIONS",
-  "Cache-Control": "no-store"
-};
-
-function jsonResponse(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      ...corsHeaders,
-      "Content-Type": "application/json; charset=utf-8"
-    }
-  });
-}
-
-async function handleData(request, env) {
-  if (!env.FINANCE_DATA) {
-    return jsonResponse({ error: "Armazenamento financeiro não configurado." }, 503);
-  }
-
-  if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
-
-  if (request.method === "GET") {
-    const payload = await env.FINANCE_DATA.get(DATA_KEY, "json");
-    return payload ? jsonResponse(payload) : jsonResponse({});
-  }
-
-  if (request.method !== "PUT") {
-    return jsonResponse({ error: "Método não permitido." }, 405);
-  }
-
-  let payload;
-  try {
-    payload = await request.json();
-  } catch {
-    return jsonResponse({ error: "JSON inválido." }, 400);
-  }
-
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return jsonResponse({ error: "O payload financeiro precisa ser um objeto JSON." }, 400);
-  }
-
-  const serialized = JSON.stringify(payload);
-  if (serialized.length > 1_000_000) {
-    return jsonResponse({ error: "O arquivo financeiro excede o limite permitido." }, 413);
-  }
-
-  await env.FINANCE_DATA.put(DATA_KEY, serialized, {
-    metadata: { updatedAt: new Date().toISOString() }
-  });
-  return jsonResponse(payload);
-}
+const apiRoutes = new Map([
+  ["/api/data", { handler: handleData, methods: ["GET", "PUT"] }],
+  ["/api/auth/google/start", { handler: startGoogleLogin, methods: ["GET"] }],
+  ["/api/auth/google/callback", { handler: finishGoogleLogin, methods: ["GET"] }],
+  ["/api/auth/session", { handler: handleSession, methods: ["GET"] }],
+  ["/api/auth/logout", { handler: handleLogout, methods: ["POST"] }]
+]);
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === "/api/data") return handleData(request, env);
+    const route = apiRoutes.get(url.pathname);
+    if (route) {
+      if (!route.methods.includes(request.method)) {
+        return new Response(JSON.stringify({ error: "Metodo nao permitido." }), {
+          status: 405,
+          headers: {
+            Allow: route.methods.join(", "),
+            "Cache-Control": "no-store",
+            "Content-Type": "application/json; charset=utf-8"
+          }
+        });
+      }
+      return route.handler({ request, env });
+    }
+    if (!env.ASSETS) return new Response("Not found", { status: 404 });
     return env.ASSETS.fetch(request);
   }
 };
