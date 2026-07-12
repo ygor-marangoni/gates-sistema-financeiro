@@ -1,27 +1,92 @@
-# Gates - Finanças
+# Gates - Financas
 
-Área financeira pessoal do sistema Gates, criada como módulo estático independente da agenda.
+Sistema financeiro pessoal estatico, sem login, sem autenticacao e sem backend obrigatorio. O app abre direto no painel e cada navegador mantem os proprios dados.
 
-## Como usar
+## Como rodar
 
-Abra `index.html` no navegador ou acesse a pasta pelo mesmo servidor estático usado pelo projeto principal.
+```bash
+npm install
+npm start
+```
 
-Os dados ficam no `localStorage` do próprio navegador, sem conta, login ou backend. Uma instalação nova sempre começa vazia. Para levar lançamentos, categorias, contas, orçamentos e metas a outro navegador, use **Exportar** e depois **Importar > Backup JSON**.
+Abra `http://127.0.0.1:4173`.
 
-## Recursos
+Tambem e possivel abrir `index.html` diretamente, mas o servidor local evita problemas com bibliotecas carregadas pelo navegador.
 
-- Visão geral financeira com entradas, saídas, saldo e meta principal.
-- Cadastro, edição e exclusão de lançamentos.
-- Filtros por período, tipo, categoria, conta e busca textual.
-- Organização por mês, semana e categoria.
-- Gráfico de saldo acumulado e composição de gastos.
-- Planejamento mensal com orçamento por categoria.
-- Metas financeiras com prazo, progresso e histórico de aportes.
-- Importação guiada de backup JSON ou extrato bancário em PDF, com revisão antes de salvar.
-- Histórico de transações, alertas, insights e compromissos futuros.
+## Persistencia
+
+- O estado completo fica no `localStorage` do navegador.
+- Uma instalacao nova comeca vazia.
+- Visitantes diferentes nao compartilham dados.
+- Nenhum JSON do repositorio e carregado como base inicial.
+- `data/financeiro.json` e arquivos privados de extratos devem permanecer fora do Git.
+- O botao **Exportar** gera um backup JSON com lancamentos, categorias, contas, orcamentos e metas.
+- O fluxo **Importar > Backup JSON** restaura esses dados em outro navegador, guia anonima ou dominio.
+- PDFs sao processados localmente no navegador; o arquivo nao e enviado para API externa.
+
+## Recursos principais
+
+- Visao geral com entradas, saidas, saldo e meta principal.
+- Cadastro, edicao e exclusao de lancamentos.
+- Filtros globais por periodo, tipo, busca, multiplas categorias e multiplas contas.
+- Planejamento mensal com orcamentos por categoria.
+- Metas financeiras com progresso e historico de aportes.
+- Categorias editaveis com cor e icone.
+- Contas criaveis e removiveis.
+- Importacao guiada de JSON e extrato/fatura PDF com revisao antes de salvar.
+- Exportacao de dados em JSON.
 - Tema claro/escuro e layout responsivo.
-- Gráficos renderizados com Chart.js.
 
-## Escopo
+## Cloudflare Pages
 
-Cada navegador mantém seu próprio estado. Publicar o projeto não publica os dados financeiros locais e pessoas diferentes não compartilham informações entre si.
+Configure como site estatico:
+
+```text
+Framework preset: None
+Build command: vazio
+Build output directory: .
+Root directory: vazio
+```
+
+Nao configure KV, D1, variaveis de autenticacao ou Pages Functions para o fluxo atual. A privacidade vem do armazenamento local isolado por navegador e da portabilidade manual pelo JSON.
+
+## Testes
+
+```bash
+node --check src/scripts/app.js
+node --check src/scripts/account-utils.js
+node --check src/scripts/pdf-parser.js
+node --check server.js
+npm test
+```
+
+## Estrutura
+
+- `index.html`: estrutura da interface.
+- `src/styles/styles.css`: identidade visual, responsividade e componentes.
+- `src/scripts/app.js`: estado, renderizacao, formularios, filtros e fluxos de importacao.
+- `src/scripts/pdf-parser.js`: parser puro de extratos e faturas.
+- `src/scripts/account-utils.js`: normalizacao e remocao de contas.
+- `assets/favicon.svg`: icone do app.
+- `server.js`: servidor estatico local.
+- `test/`: testes automatizados com `node:test`.
+
+## Diretrizes de UX
+
+- Manter o sistema direto, operacional e sem telas de login.
+- Usar verde com moderacao: acao primaria, saldo positivo e progresso.
+- Evitar icones decorativos; icones devem apoiar comandos ou categorias.
+- Toda importacao precisa ter previa antes de salvar.
+- Comandos destrutivos precisam de confirmacao.
+- Mobile deve priorizar leitura vertical e evitar depender de tabela larga.
+- Controles globais devem afetar o sistema de forma previsivel.
+
+## Proximas melhorias recomendadas
+
+- Previa revisavel para importacao JSON, com opcoes de substituir ou mesclar.
+- Desfazer apos exclusao, importacao e edicoes importantes.
+- Acoes em lote para lancamentos.
+- Recorrencias reais com frequencia, fim e proxima ocorrencia.
+- Transferencias entre contas sem impactar receitas/despesas.
+- Importacao OFX/CSV com mapeamento de colunas e deduplicacao.
+- Regras locais de categorizacao por descricao.

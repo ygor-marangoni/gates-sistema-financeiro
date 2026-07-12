@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const accounts = require("../account-utils.js");
+const accounts = require("../src/scripts/account-utils.js");
 
 test("migra contas de JSON antigo e remove duplicatas equivalentes", () => {
   const result = accounts.normalizeAccounts(

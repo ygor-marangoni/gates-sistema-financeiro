@@ -284,7 +284,12 @@
 
   function isSummaryLine(line, context = {}) {
     const normalized = comparable(line);
+    const compact = normalized.replace(/[^A-Z0-9]/g, "");
+    const moneyCount = (String(line || "").match(/(?:R\$\s*)?[-+]?\(?\d[\d.\s]*[,.]\d{2}\)?(?:[-+])?/g) || []).length;
     if (SUMMARY_PHRASES.some((phrase) => normalized.includes(phrase))) return true;
+    if (/(?:TOTALDEENTRADAS|TOTALDESAIDAS|TOTALDAFATURA|TOTALDECOMPRAS|SALDODODIA|SALDOINICIAL|SALDOFINALDOPERIODO)/.test(compact)) return true;
+    if (compact.includes("TOTAL") && /(?:ENTRADAS|SAIDAS|TRANSFERENCIA|RDB|SALDO)/.test(compact)) return true;
+    if (normalized.includes("SALDO") && normalized.includes("DIA") && moneyCount > 1) return true;
     if (/^(?:TOTAL|SUBTOTAL)(?:\s|$)/.test(normalized)) return true;
     if (normalized.includes("VALORES EM R$")) return true;
     if (/^\d{1,2}\s+(?:DE\s+)?[A-Z]{3,10}(?:\s+DE)?\s+20\d{2}\s+A\s+\d{1,2}\s+(?:DE\s+)?[A-Z]{3,10}/.test(normalized)) return true;

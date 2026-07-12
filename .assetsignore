@@ -6,6 +6,9 @@ node_modules/
 README.md
 RELATORIO_UX.md
 PERSISTENCIA.md
+extratos/
+data/
+tmp/
 server.js
 worker.js
 wrangler.jsonc

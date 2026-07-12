@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const parser = require("../pdf-parser.js");
+const parser = require("../src/scripts/pdf-parser.js");
 
 const statementContext = {
   documentType: "bank_statement",
@@ -383,4 +383,8 @@ test("número de documento monetário não substitui o valor da movimentação",
   const item = parse("10/06 DOC: 300.000,00 COMPRA MERCADO 100,00 SALDO 500,00");
   assert.equal(item.amount, 100);
   assert.equal(item.description, "DOC: 300.000,00 COMPRA MERCADO");
+});
+test("resumos colados de extrato nao viram movimentacao", () => {
+  assert.equal(parse("10/06 TotalTransferenciaDe entradasrecebida pelo Pix JOAO + 300,00"), null);
+  assert.equal(parse("10/06 Pix enviado: Maria 100,00 Saldo do dia: 900,00"), null);
 });

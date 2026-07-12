@@ -79,7 +79,6 @@ const els = {
   categoryLegend: document.getElementById("categoryLegend"),
   insightList: document.getElementById("insightList"),
   upcomingList: document.getElementById("upcomingList"),
-  transactionSummary: document.getElementById("transactionSummary"),
   transactionTable: document.getElementById("transactionTable"),
   btnToggleBudgetForm: document.getElementById("btnToggleBudgetForm"),
   budgetForm: document.getElementById("budgetForm"),
@@ -88,7 +87,6 @@ const els = {
   budgetList: document.getElementById("budgetList"),
   weekSummaryList: document.getElementById("weekSummaryList"),
   planningInsightList: document.getElementById("planningInsightList"),
-  planningUpcomingList: document.getElementById("planningUpcomingList"),
   goalForm: document.getElementById("goalForm"),
   goalNameInput: document.getElementById("goalNameInput"),
   goalTargetInput: document.getElementById("goalTargetInput"),
@@ -187,8 +185,8 @@ const app = {
   filters: {
     search: "",
     type: "all",
-    category: "all",
-    account: "all"
+    category: [],
+    account: []
   }
 };
 
@@ -578,28 +576,47 @@ function allPeriodTransactions() {
     .sort(sortTransactions);
 }
 
+function normalizeMultiFilter(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item)).filter((item) => item && item !== "all");
+  if (!value || value === "all") return [];
+  return [String(value)];
+}
+
+function multiFilterIsEmpty(value) {
+  return normalizeMultiFilter(value).length === 0;
+}
+
 function matchesCategoryFilter(item) {
-  if (app.filters.category === "all") return true;
-  if (app.filters.category === UNCATEGORIZED_FILTER_VALUE) return !item.category;
-  return item.category === app.filters.category;
+  const values = normalizeMultiFilter(app.filters.category);
+  if (!values.length) return true;
+  if (values.includes(UNCATEGORIZED_FILTER_VALUE) && !item.category) return true;
+  return values.includes(item.category);
+}
+
+function matchesAccountFilter(item) {
+  const values = normalizeMultiFilter(app.filters.account);
+  if (!values.length) return true;
+  return values.includes(item.account);
+}
+
+function transactionMatchesActiveFilters(item, search = app.filters.search) {
+  if (app.filters.type !== "all" && item.type !== app.filters.type) return false;
+  if (!matchesCategoryFilter(item)) return false;
+  if (!matchesAccountFilter(item)) return false;
+  const normalizedSearch = String(search || "").toLowerCase();
+  if (!normalizedSearch) return true;
+  const haystack = [
+    item.description,
+    item.account,
+    item.notes,
+    categoryLabel(item.category),
+    item.type === "income" ? "entrada receita" : "saida despesa"
+  ].join(" ").toLowerCase();
+  return haystack.includes(normalizedSearch);
 }
 
 function visibleTransactions() {
-  const search = app.filters.search.toLowerCase();
-  return allPeriodTransactions().filter((item) => {
-    if (app.filters.type !== "all" && item.type !== app.filters.type) return false;
-    if (!matchesCategoryFilter(item)) return false;
-    if (app.filters.account !== "all" && item.account !== app.filters.account) return false;
-    if (!search) return true;
-    const haystack = [
-      item.description,
-      item.account,
-      item.notes,
-      categoryLabel(item.category),
-      item.type === "income" ? "entrada receita" : "saida despesa"
-    ].join(" ").toLowerCase();
-    return haystack.includes(search);
-  });
+  return allPeriodTransactions().filter((item) => transactionMatchesActiveFilters(item));
 }
 
 function sortTransactions(a, b) {
@@ -734,10 +751,10 @@ function deleteAccount(account) {
   if (!result.removed) return;
   app.state.accounts = result.accounts;
   app.state.transactions = result.transactions;
-  if ((window.GatesAccountUtils?.identity(app.filters.account) || String(app.filters.account || "").toLowerCase())
-    === (window.GatesAccountUtils?.identity(account) || String(account).toLowerCase())) {
-    app.filters.account = "all";
-  }
+  const removedKey = window.GatesAccountUtils?.identity(account) || String(account).toLowerCase();
+  app.filters.account = normalizeMultiFilter(app.filters.account).filter((item) => (
+    (window.GatesAccountUtils?.identity(item) || String(item || "").toLowerCase()) !== removedKey
+  ));
   fillAccountInput("");
   saveState();
   renderAll();
@@ -819,6 +836,7 @@ function initCustomSelectControls() {
     select.classList.add("native-control-proxy");
 
     const kind = controlKind(select);
+    const isMulti = select.multiple;
     const wrap = document.createElement("div");
     const trigger = document.createElement("button");
     const valueNode = document.createElement("span");
@@ -857,10 +875,16 @@ function initCustomSelectControls() {
         const item = document.createElement("button");
         const color = optionColor(option.value);
         item.type = "button";
-        item.className = "custom-select-option";
+        item.className = isMulti ? "custom-select-option custom-select-option-multi" : "custom-select-option";
         item.dataset.value = option.value;
         item.dataset.index = String(index);
         item.setAttribute("role", "option");
+        if (isMulti) {
+          const check = document.createElement("span");
+          check.className = "custom-option-check";
+          check.innerHTML = lucideIcon("check");
+          item.appendChild(check);
+        }
         if (color) {
           const dot = document.createElement("span");
           dot.className = "custom-option-dot";
@@ -869,9 +893,19 @@ function initCustomSelectControls() {
         }
         item.appendChild(document.createTextNode(option.textContent));
         item.addEventListener("click", () => {
-          select.value = option.value;
+          if (isMulti) {
+            if (option.value === "all") {
+              Array.from(select.options).forEach((entry) => { entry.selected = false; });
+            } else {
+              option.selected = !option.selected;
+              const allOption = Array.from(select.options).find((entry) => entry.value === "all");
+              if (allOption) allOption.selected = false;
+            }
+          } else {
+            select.value = option.value;
+          }
           emitNativeChange(select);
-          close();
+          if (!isMulti) close();
           sync();
           trigger.focus();
         });
@@ -891,21 +925,29 @@ function initCustomSelectControls() {
       const items = Array.from(list.querySelectorAll(".custom-select-option"));
       const item = items[activeIndex] || items.find((option) => option.dataset.value === select.value);
       if (!item) return;
-      select.value = item.dataset.value;
-      emitNativeChange(select);
-      close();
-      sync();
-      trigger.focus();
+      item.click();
     }
 
     function sync() {
+      const selectedOptions = Array.from(select.selectedOptions).filter((option) => option.value !== "all");
       const selected = select.selectedOptions[0] || select.options[0];
-      valueNode.textContent = selected ? selected.textContent : controlLabel(select);
-      valueNode.classList.toggle("is-placeholder", !select.value || select.value === "all");
-      const selectedIndex = Array.from(select.options).findIndex((option) => option.value === select.value);
+      if (isMulti) {
+        const singular = select.dataset.multiLabelSingular || "item";
+        const plural = select.dataset.multiLabelPlural || `${singular}s`;
+        if (!selectedOptions.length) valueNode.textContent = select.options[0]?.textContent || controlLabel(select);
+        else if (selectedOptions.length === 1) valueNode.textContent = selectedOptions[0].textContent;
+        else valueNode.textContent = `${selectedOptions.length} ${plural}`;
+        valueNode.classList.toggle("is-placeholder", selectedOptions.length === 0);
+      } else {
+        valueNode.textContent = selected ? selected.textContent : controlLabel(select);
+        valueNode.classList.toggle("is-placeholder", !select.value || select.value === "all");
+      }
+      const selectedIndex = Array.from(select.options).findIndex((option) => isMulti ? option.selected : option.value === select.value);
       activeIndex = selectedIndex >= 0 ? selectedIndex : 0;
       list.querySelectorAll(".custom-select-option").forEach((item) => {
-        const selectedItem = item.dataset.value === select.value;
+        const selectedItem = isMulti
+          ? (item.dataset.value === "all" ? selectedOptions.length === 0 : Array.from(select.options).find((option) => option.value === item.dataset.value)?.selected)
+          : item.dataset.value === select.value;
         item.classList.toggle("selected", selectedItem);
         item.setAttribute("aria-selected", String(selectedItem));
       });
@@ -917,9 +959,10 @@ function initCustomSelectControls() {
       sync();
       wrap.classList.add("open");
       trigger.setAttribute("aria-expanded", "true");
-      const menuWidth = kind === "filter" ? 150 : 240;
+      const menuWidth = kind === "filter" ? 190 : 240;
       control.reposition = () => positionFloatingControl(trigger, list, menuWidth);
       control.reposition();
+      refreshLucideIcons();
       requestAnimationFrame(() => setActive(activeIndex));
     }
 
@@ -1167,7 +1210,6 @@ function renderAll() {
   renderBudgets();
   renderWeekSummary();
   renderPlanningInsights();
-  renderPlanningUpcoming();
   renderGoalOverview();
   renderGoals();
   renderCategories();
@@ -1219,22 +1261,27 @@ function fillFilters() {
     ? allCategories()
     : categoriesForType(app.filters.type).filter((category) => activeIds.has(category.id));
 
-  const currentCategoryStillValid = ["all", UNCATEGORIZED_FILTER_VALUE].includes(app.filters.category)
-    || categories.some((category) => category.id === app.filters.category);
-  if (!currentCategoryStillValid) app.filters.category = "all";
+  const categoryIds = new Set([UNCATEGORIZED_FILTER_VALUE, ...categories.map((category) => category.id)]);
+  const accountIds = new Set(uniqueAccounts());
+  app.filters.category = normalizeMultiFilter(app.filters.category).filter((id) => categoryIds.has(id));
+  app.filters.account = normalizeMultiFilter(app.filters.account).filter((account) => accountIds.has(account));
 
   els.filterCategory.innerHTML = [
     '<option value="all">Categorias</option>',
     `<option value="${UNCATEGORIZED_FILTER_VALUE}">Sem categoria</option>`,
     ...categories.map((category) => `<option value="${category.id}">${escapeHTML(category.label)}</option>`)
   ].join("");
-  els.filterCategory.value = app.filters.category;
+  Array.from(els.filterCategory.options).forEach((option) => {
+    option.selected = app.filters.category.includes(option.value);
+  });
 
   els.filterAccount.innerHTML = [
     '<option value="all">Contas</option>',
     ...uniqueAccounts().map((account) => `<option value="${escapeHTML(account)}">${escapeHTML(account)}</option>`)
   ].join("");
-  els.filterAccount.value = app.filters.account;
+  Array.from(els.filterAccount.options).forEach((option) => {
+    option.selected = app.filters.account.includes(option.value);
+  });
   els.filterType.value = app.filters.type;
 }
 
@@ -1401,23 +1448,9 @@ function cashflowRange() {
 
 function cashflowTransactions() {
   const range = cashflowRange();
-  const search = app.filters.search.toLowerCase();
   return app.state.transactions
     .filter((item) => isInRange(item.date, range))
-    .filter((item) => {
-      if (app.filters.type !== "all" && item.type !== app.filters.type) return false;
-      if (!matchesCategoryFilter(item)) return false;
-      if (app.filters.account !== "all" && item.account !== app.filters.account) return false;
-      if (!search) return true;
-      const haystack = [
-        item.description,
-        item.account,
-        item.notes,
-        categoryLabel(item.category),
-        item.type === "income" ? "entrada receita" : "saida despesa"
-      ].join(" ").toLowerCase();
-      return haystack.includes(search);
-    })
+    .filter((item) => transactionMatchesActiveFilters(item))
     .sort((a, b) => a.date.localeCompare(b.date));
 }
 
@@ -1685,8 +1718,6 @@ function renderUpcoming() {
 
 function renderTransactions() {
   const items = visibleTransactions();
-  const totals = totalsFor(items);
-  if (els.transactionSummary) els.transactionSummary.textContent = `${items.length} ${items.length === 1 ? "lançamento" : "lançamentos"} · Entradas ${brl(totals.income)} · Saídas ${brl(totals.expense)}`;
 
   if (!items.length) {
     els.transactionTable.innerHTML = '<tr class="transaction-empty-row"><td colspan="6"><div class="empty-state">Nenhum lançamento encontrado para o filtro atual.</div></td></tr>';
@@ -1953,39 +1984,6 @@ function renderPlanningInsights() {
   `).join("");
 }
 
-function renderPlanningUpcoming() {
-  if (!els.planningUpcomingList) return;
-  const today = stripTime(new Date());
-  const range = planningMonthRange();
-  const items = app.state.transactions
-    .filter((item) => item.type === "expense" && isInRange(item.date, range) && (fromISO(item.date) >= today || item.recurring))
-    .sort((a, b) => a.date.localeCompare(b.date))
-    .slice(0, 5);
-
-  if (!items.length) {
-    els.planningUpcomingList.innerHTML = `
-      <div class="planning-empty-state">
-        <strong>Nenhuma despesa prevista</strong>
-        <span>Cadastre lan\u00e7amentos futuros para planejar melhor o m\u00eas.</span>
-      </div>
-    `;
-    return;
-  }
-
-  els.planningUpcomingList.innerHTML = items.map((item) => `
-    <article class="planning-upcoming-item">
-      <div>
-        <strong>${escapeHTML(item.description)}</strong>
-        <span>${escapeHTML(formatDate(fromISO(item.date)))} · ${escapeHTML(categoryLabel(item.category))}</span>
-      </div>
-      <div>
-        <strong class="amount-expense">- ${brl(item.amount)}</strong>
-        <em>${item.recurring ? "Recorrente" : fromISO(item.date) > today ? "Prevista" : "Pendente"}</em>
-      </div>
-    </article>
-  `).join("");
-}
-
 function renderGoals() {
   if (els.goalCountLabel) {
     const count = app.state.goals.length;
@@ -2163,8 +2161,9 @@ function renderCategories() {
     ? allCategories()
     : categoriesForType(app.filters.type);
 
-  if (app.filters.category !== "all") {
-    categories = categories.filter((category) => category.id === app.filters.category);
+  const selectedCategories = normalizeMultiFilter(app.filters.category).filter((id) => id !== UNCATEGORIZED_FILTER_VALUE);
+  if (selectedCategories.length) {
+    categories = categories.filter((category) => selectedCategories.includes(category.id));
   }
 
   const entries = categories.map((category) => {
@@ -2172,7 +2171,7 @@ function renderCategories() {
     return { ...category, count };
   }).filter((category) => {
     if (search && !category.label.toLowerCase().includes(search) && category.count === 0) return false;
-    if (app.filters.account !== "all" && category.count === 0) return false;
+    if (!multiFilterIsEmpty(app.filters.account) && category.count === 0) return false;
     return true;
   }).sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
 
@@ -2386,7 +2385,7 @@ function deleteCategory(id) {
   delete app.state.budgets[id];
   app.state.categories.income = app.state.categories.income.filter((category) => category.id !== id);
   app.state.categories.expense = app.state.categories.expense.filter((category) => category.id !== id);
-  if (app.filters.category === id) app.filters.category = "all";
+  app.filters.category = normalizeMultiFilter(app.filters.category).filter((categoryId) => categoryId !== id);
   if (els.categoryInput.value === id) fillCategoryInputs();
   saveState();
   if (app.editingCategoryId === id) resetCategoryForm();
@@ -3463,17 +3462,17 @@ function bindEvents() {
   });
 
   els.filterCategory.addEventListener("change", () => {
-    app.filters.category = els.filterCategory.value;
+    app.filters.category = normalizeMultiFilter([...els.filterCategory.selectedOptions].map((option) => option.value));
     renderAll();
   });
 
   els.filterAccount.addEventListener("change", () => {
-    app.filters.account = els.filterAccount.value;
+    app.filters.account = normalizeMultiFilter([...els.filterAccount.selectedOptions].map((option) => option.value));
     renderAll();
   });
 
   els.filterClearBtn.addEventListener("click", () => {
-    app.filters = { search: "", type: "all", category: "all", account: "all" };
+    app.filters = { search: "", type: "all", category: [], account: [] };
     els.searchInput.value = "";
     renderAll();
   });

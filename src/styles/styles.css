@@ -833,6 +833,32 @@ input[type="date"]::-webkit-calendar-picker-indicator {
         color 0.12s;
 }
 
+.custom-select-option-multi {
+    padding-left: 0.48rem;
+}
+
+.custom-option-check {
+    display: inline-flex;
+    width: 1.05rem;
+    height: 1.05rem;
+    flex: 0 0 1.05rem;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--line-strong);
+    border-radius: 5px;
+    color: transparent;
+    background: var(--surface-muted);
+    transition:
+        background 0.12s,
+        border-color 0.12s,
+        color 0.12s;
+}
+
+.custom-option-check i {
+    width: 0.78rem;
+    height: 0.78rem;
+}
+
 .custom-select-option:hover,
 .custom-select-option.is-active {
     background: var(--surface-muted);
@@ -842,6 +868,12 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 .custom-select-option.selected {
     background: var(--surface-soft);
     color: var(--text);
+}
+
+.custom-select-option.selected .custom-option-check {
+    border-color: var(--primary);
+    background: var(--primary);
+    color: #fff;
 }
 
 .custom-select-option.selected.is-active,
