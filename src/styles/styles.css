@@ -1284,31 +1284,6 @@ body.drawer-open {
     height: 100% !important;
 }
 
-.chart-range-toggle {
-    display: flex;
-    gap: 0.15rem;
-    padding: 0.22rem;
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    background: var(--surface-soft);
-}
-
-.chart-range-btn {
-    min-height: 2.05rem;
-    padding: 0 0.78rem;
-    border-radius: 9px;
-    color: var(--muted);
-    font-size: 0.8rem;
-    font-weight: 700;
-    white-space: nowrap;
-}
-
-.chart-range-btn.active {
-    background: var(--surface);
-    color: var(--text);
-    box-shadow: none;
-}
-
 .text-income {
     color: var(--income) !important;
 }
@@ -3986,7 +3961,6 @@ body.dark-mode ::-webkit-scrollbar-thumb:hover {
 }
 
 body.dark-mode .period-btn.active,
-body.dark-mode .chart-range-btn.active,
 body.dark-mode .period-btn:hover:not(.active),
 body.dark-mode .nav-btn:hover,
 body.dark-mode .segment.active,
@@ -4062,7 +4036,6 @@ body.dark-mode .chart-frame {
     background-color: var(--surface-muted);
 }
 
-body.dark-mode .chart-range-toggle,
 body.dark-mode .cashflow-summary span {
     background: var(--surface);
 }
@@ -4406,17 +4379,8 @@ body.dark-mode .cashflow-summary span {
         flex-wrap: wrap;
     }
 
-    .chart-range-toggle {
-        width: 100%;
-        overflow-x: auto;
-    }
-
     .chart-select {
         width: 100%;
-    }
-
-    .chart-range-btn {
-        flex: 1 0 auto;
     }
 
     .chart-frame,

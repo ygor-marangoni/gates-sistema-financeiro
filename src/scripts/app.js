@@ -71,7 +71,6 @@ const els = {
   balanceMeta: document.getElementById("balanceMeta"),
   mainGoalTotal: document.getElementById("mainGoalTotal"),
   mainGoalMeta: document.getElementById("mainGoalMeta"),
-  chartRangeToggle: document.getElementById("chartRangeToggle"),
   cashflowChart: document.getElementById("cashflowChart"),
   categoryChart: document.getElementById("categoryChart"),
   categoryChartType: document.getElementById("categoryChartType"),
@@ -166,7 +165,6 @@ const app = {
   state: seedState(),
   currentView: "overview",
   currentType: "income",
-  chartRange: "30d",
   categoryChartType: "expense",
   editingTransactionId: null,
   editingGoalId: null,
@@ -351,7 +349,6 @@ function seedState() {
     currentView: "overview",
     period: "month",
     theme: "light",
-    chartRange: "30d",
     categoryChartType: "expense",
     categories: cloneCategories(),
     accounts: [],
@@ -394,7 +391,6 @@ function normalizeState(raw) {
     period: ["month", "week", "all"].includes(raw?.period) ? raw.period : "month",
     currentView: ["overview", "transactions", "planning", "goals", "categories"].includes(raw?.currentView) ? raw.currentView : "overview",
     theme: raw?.theme === "dark" ? "dark" : "light",
-    chartRange: ["7d", "30d", "3m", "all"].includes(raw?.chartRange) ? raw.chartRange : fallback.chartRange,
     categoryChartType: ["expense", "income", "all"].includes(raw?.categoryChartType) ? raw.categoryChartType : fallback.categoryChartType,
     categories,
     accounts,
@@ -530,7 +526,6 @@ function exportPayload() {
     period: app.state.period,
     theme: app.state.theme,
     currentView: app.state.currentView,
-    chartRange: app.state.chartRange,
     categoryChartType: app.state.categoryChartType,
     categories: app.state.categories,
     accounts: [...app.state.accounts],
@@ -1240,9 +1235,6 @@ function updatePeriodButtons() {
   });
   els.btnPrev.disabled = app.state.period === "all";
   els.btnNext.disabled = app.state.period === "all";
-  document.querySelectorAll(".chart-range-btn").forEach((button) => {
-    button.classList.toggle("active", button.dataset.chartRange === app.chartRange);
-  });
 }
 
 function updateNavButtons() {
@@ -1423,35 +1415,8 @@ function renderCharts() {
     return;
   }
 
-  renderCashflowChart(cashflowTransactions());
+  renderCashflowChart(visibleTransactions());
   renderCategoryChart(visibleTransactions());
-}
-
-function cashflowRange() {
-  const selected = selectedDate();
-  if (app.chartRange === "7d") return { start: addDays(selected, -6), end: selected, label: "7 dias" };
-  if (app.chartRange === "3m") return { start: addMonths(selected, -2), end: new Date(selected.getFullYear(), selected.getMonth() + 1, 0), label: "3 meses" };
-  if (app.chartRange === "all") {
-    const dates = app.state.transactions.map((item) => fromISO(item.date)).sort((a, b) => a - b);
-    return {
-      start: dates[0] || new Date(selected.getFullYear(), selected.getMonth(), 1),
-      end: dates[dates.length - 1] || selected,
-      label: "Tudo"
-    };
-  }
-  return {
-    start: addDays(selected, -29),
-    end: selected,
-    label: "30 dias"
-  };
-}
-
-function cashflowTransactions() {
-  const range = cashflowRange();
-  return app.state.transactions
-    .filter((item) => isInRange(item.date, range))
-    .filter((item) => transactionMatchesActiveFilters(item))
-    .sort((a, b) => a.date.localeCompare(b.date));
 }
 
 function chartTextColor() {
@@ -1463,7 +1428,7 @@ function chartGridColor() {
 }
 
 function renderCashflowChart(items) {
-  const range = cashflowRange();
+  const range = periodRange();
   const days = Math.max(1, Math.round((range.end - range.start) / 86400000) + 1);
   const daily = Array.from({ length: days }, () => 0);
 
@@ -1478,9 +1443,12 @@ function renderCashflowChart(items) {
     return cumulative[index];
   }, 0);
 
+  const crossesMonths = range.start.getMonth() !== range.end.getMonth()
+    || range.start.getFullYear() !== range.end.getFullYear();
   const labels = Array.from({ length: days }, (_, index) => {
     const date = addDays(range.start, index);
-    return String(date.getDate()).padStart(2, "0");
+    if (!crossesMonths) return String(date.getDate()).padStart(2, "0");
+    return date.toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
   });
   const positive = cumulative[cumulative.length - 1] >= 0;
   const lineColor = positive ? getCssVar("--primary") : getCssVar("--expense");
@@ -1490,7 +1458,7 @@ function renderCashflowChart(items) {
   const data = {
     labels,
     datasets: [{
-      label: "Saldo",
+      label: "Saldo do periodo",
       data: cumulative,
       borderColor: lineColor,
       backgroundColor: (context) => {
@@ -1522,7 +1490,7 @@ function renderCashflowChart(items) {
       legend: { display: false },
       tooltip: {
         callbacks: {
-          label: (context) => `Saldo: ${brl(context.parsed.y)}`
+          label: (context) => `Saldo do periodo: ${brl(context.parsed.y)}`
         }
       }
     },
@@ -3311,7 +3279,6 @@ async function confirmPreparedImport() {
       app.state = app.pendingImport.state;
       await saveState({ strict: window.location.protocol !== "file:" });
       app.currentView = app.state.currentView;
-      app.chartRange = app.state.chartRange;
       app.categoryChartType = app.state.categoryChartType;
       resetTransactionForm();
       resetGoalForm();
@@ -3402,16 +3369,6 @@ function bindEvents() {
 
   document.querySelectorAll(".period-btn").forEach((button) => {
     button.addEventListener("click", () => setPeriod(button.dataset.period));
-  });
-
-  els.chartRangeToggle.addEventListener("click", (event) => {
-    const button = event.target.closest(".chart-range-btn");
-    if (!button) return;
-    app.chartRange = button.dataset.chartRange;
-    app.state.chartRange = app.chartRange;
-    saveState();
-    updatePeriodButtons();
-    renderCharts();
   });
 
   els.categoryChartType.addEventListener("change", () => {
@@ -3684,7 +3641,6 @@ async function init() {
   bindEvents();
   await loadData();
   app.currentView = app.state.currentView || "overview";
-  app.chartRange = app.state.chartRange || "30d";
   app.categoryChartType = app.state.categoryChartType || "expense";
   resetTransactionForm();
   resetCategoryForm();
